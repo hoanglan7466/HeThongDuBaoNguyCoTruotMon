@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block heading %}Báo cáo{% endblock %}
+{% block content %}
+<div class="title"><div><h1>Báo cáo nguy cơ dự báo</h1><p>Dữ liệu lịch sử từ các lần chạy mô hình.</p></div><a class="button" href="{{url_for('main.export_report',risk=risk,q=term)}}">Xuất CSV</a></div>
+<article class="panel"><form class="search" method="get"><input name="q" value="{{term}}" placeholder="MSSV hoặc họ tên"><select name="risk"><option value="">Tất cả mức nguy cơ</option><option value="CAO" {% if risk=='CAO' %}selected{% endif %}>Cao</option><option value="TRUNG_BINH" {% if risk=='TRUNG_BINH' %}selected{% endif %}>Trung bình</option><option value="ON_DINH" {% if risk=='ON_DINH' %}selected{% endif %}>Ổn định</option></select><button>Lọc báo cáo</button></form></article>
+<article class="panel table"><table><thead><tr><th>MSSV</th><th>Họ tên</th><th>Môn</th><th>Xác suất</th><th>Mức nguy cơ</th><th>Thời gian</th></tr></thead><tbody>{% for p in predictions %}<tr><td><a href="{{url_for('main.student_detail',student_id=p.enrollment.student.id)}}">{{p.enrollment.student.student_code}}</a></td><td>{{p.enrollment.student.full_name}}</td><td>{{p.enrollment.course.name}}</td><td>{{'%.1f'|format(p.probability*100)}}%</td><td><span class="risk {{p.risk_level}}">{{p.risk_level|replace('_',' ')}}</span></td><td>{{p.created_at.strftime('%d/%m/%Y %H:%M')}}</td></tr>{% else %}<tr><td colspan="6">Chưa có dữ liệu phù hợp bộ lọc.</td></tr>{% endfor %}</tbody></table></article>
+{% endblock %}

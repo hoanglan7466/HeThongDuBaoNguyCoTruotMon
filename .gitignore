@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+instance/*.db
+instance/uploads/
+logs/
+.pytest_cache/
+.idea/
+.vscode/
+machine_learning/models/*.joblib
+machine_learning/models/*.json
+!machine_learning/models/.gitkeep
