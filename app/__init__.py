@@ -2,11 +2,13 @@ import os
 from datetime import timedelta
 from pathlib import Path
 from flask import Flask, jsonify, render_template
+from dotenv import load_dotenv
 from .extensions import csrf, db, login_manager
 
 def create_app(test_config=None):
     app=Flask(__name__,instance_relative_config=True)
     root=Path(app.root_path).parent
+    load_dotenv(root / ".env", override=False)
     app.config.from_mapping(
         SECRET_KEY=os.getenv("SECRET_KEY") or os.urandom(32),
         SQLALCHEMY_DATABASE_URI=os.getenv("DATABASE_URL",f"sqlite:///{root/'instance'/'app.db'}"),
@@ -21,6 +23,8 @@ def create_app(test_config=None):
         SHOW_DEMO_ACCOUNTS=os.getenv("SHOW_DEMO_ACCOUNTS","true").lower()=="true",
         SMTP_HOST=os.getenv("SMTP_HOST"),SMTP_PORT=int(os.getenv("SMTP_PORT","587")),SMTP_USERNAME=os.getenv("SMTP_USERNAME"),SMTP_PASSWORD=os.getenv("SMTP_PASSWORD"),SMTP_FROM=os.getenv("SMTP_FROM"),SMTP_USE_TLS=os.getenv("SMTP_USE_TLS","true").lower()=="true")
     if test_config: app.config.update(test_config)
+    if not 0 <= app.config["RISK_MEDIUM_THRESHOLD"] < app.config["RISK_HIGH_THRESHOLD"] <= 1:
+        raise ValueError("Risk thresholds must satisfy 0 <= medium < high <= 1.")
     (root/"instance").mkdir(exist_ok=True); db.init_app(app); login_manager.init_app(app); csrf.init_app(app)
     login_manager.login_view="main.login"; login_manager.login_message="Vui lòng đăng nhập để tiếp tục."
     from .models import User
@@ -44,8 +48,11 @@ def create_app(test_config=None):
     def health():
         try: db.session.execute(db.text("SELECT 1")); database="ok"
         except Exception: database="error"
-        from pathlib import Path
-        return jsonify(status="ok" if database=="ok" else "degraded",database=database,model="ready" if Path(app.config["MODEL_PATH"]).exists() else "missing",smtp="configured" if app.config.get("SMTP_HOST") else "dev-fallback"),200 if database=="ok" else 503
+        from .services import model_bundle, smtp_configured
+        try: model_bundle(); model="ready"
+        except FileNotFoundError: model="missing"
+        except Exception: model="invalid"
+        return jsonify(status="ok" if database=="ok" else "degraded",database=database,model=model,smtp="configured" if smtp_configured() else "dev-fallback"),200 if database=="ok" else 503
     @app.errorhandler(404)
     def not_found(e): return render_template("error.html",code=404,message="Không tìm thấy trang."),404
     @app.errorhandler(400)

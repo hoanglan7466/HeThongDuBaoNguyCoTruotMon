@@ -5,7 +5,11 @@ __pycache__/
 instance/*.db
 instance/uploads/
 logs/
+instance/*.log
+instance/*.pid
+instance/*.secret
 .pytest_cache/
+pytest-cache-files-*/
 .idea/
 .vscode/
 machine_learning/models/*.joblib

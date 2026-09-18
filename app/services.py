@@ -71,6 +71,10 @@ def model_bundle():
         raise ValueError("Tệp mô hình không đúng định dạng.")
     if bundle["metadata"].get("features") not in (None,FEATURES):
         raise ValueError("Bộ đặc trưng của mô hình không tương thích.")
+    # Keep inference inside the Flask worker.  Some Windows deployments cannot
+    # create Joblib worker handles from a web request.
+    if hasattr(bundle["model"], "n_jobs"):
+        bundle["model"].n_jobs = 1
     return bundle
 
 @lru_cache(maxsize=4)
@@ -86,12 +90,14 @@ def recommendations_for(e):
     return result
 
 def predict_enrollment(e):
+    if e.current_week < 5:
+        raise ValueError("Chưa đủ dữ liệu để thực hiện dự báo từ tuần 5.")
     bundle=model_bundle(); probability=float(bundle["model"].predict_proba(pd.DataFrame([[e.score,e.attendance_rate,e.late_submissions]],columns=FEATURES))[0][1])
     level=risk_level(probability); factors=[]
     if e.score<5: factors.append("điểm hiện tại thấp")
     if e.attendance_rate<80: factors.append("tỷ lệ chuyên cần thấp")
     if e.late_submissions>=2: factors.append("nhiều lần nộp bài trễ")
-    p=Prediction(enrollment=e, probability=probability, risk_level=level, model_version=bundle["metadata"]["version"], factors_json=json.dumps(factors,ensure_ascii=False)); db.session.add(p); db.session.flush()
+    p=Prediction(enrollment=e, probability=probability, risk_level=level, model_version=bundle["metadata"]["version"], factors_json=json.dumps(factors,ensure_ascii=False), week_number=e.current_week); db.session.add(p); db.session.flush()
     Recommendation.query.filter_by(enrollment_id=e.id).delete()
     for cat,content in recommendations_for(e): db.session.add(Recommendation(enrollment_id=e.id,category=cat,content=content))
     created_alert=False
@@ -102,12 +108,20 @@ def predict_enrollment(e):
         send_email(e.student.email,"Cảnh báo nguy cơ học tập",f"Hệ thống ghi nhận nguy cơ dự báo cao cho môn {e.course.name}. Xác suất mô hình: {probability:.1%}. Vui lòng liên hệ cố vấn để được hỗ trợ.")
     return p
 
+def smtp_configured():
+    return all(current_app.config.get(key) for key in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"))
+
 def send_email(recipient, subject, body):
     cfg=current_app.config
-    if not cfg.get("SMTP_HOST") or not cfg.get("SMTP_USERNAME"):
+    if not smtp_configured():
         db.session.add(EmailLog(recipient=recipient,subject=subject,status="DEV_PREVIEW",preview=body)); db.session.commit(); current_app.logger.info("EMAIL DEV %s | %s",recipient,body); return "DEV_PREVIEW"
     msg=EmailMessage(); msg["From"]=cfg["SMTP_FROM"]; msg["To"]=recipient; msg["Subject"]=subject; msg.set_content(body)
-    with smtplib.SMTP(cfg["SMTP_HOST"],cfg["SMTP_PORT"],timeout=15) as server:
-        if cfg["SMTP_USE_TLS"]: server.starttls()
-        server.login(cfg["SMTP_USERNAME"],cfg["SMTP_PASSWORD"]); server.send_message(msg)
+    try:
+        with smtplib.SMTP(cfg["SMTP_HOST"],cfg["SMTP_PORT"],timeout=15) as server:
+            if cfg["SMTP_USE_TLS"]: server.starttls()
+            server.login(cfg["SMTP_USERNAME"],cfg["SMTP_PASSWORD"]); server.send_message(msg)
+    except (OSError, smtplib.SMTPException):
+        db.session.add(EmailLog(recipient=recipient,subject=subject,status="FAILED",preview=body)); db.session.commit()
+        current_app.logger.warning("Email delivery failed; prediction remains saved.")
+        return "FAILED"
     db.session.add(EmailLog(recipient=recipient,subject=subject,status="SENT")); db.session.commit(); return "SENT"

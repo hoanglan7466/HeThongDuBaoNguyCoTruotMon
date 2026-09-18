@@ -34,13 +34,12 @@ Tạo database MySQL bằng `database/schema.sql`, tạo user có quyền tối 
 
 ```powershell
 $env:FLASK_APP="run.py"
-$env:DEMO_ADMIN_PASSWORD="mật-khẩu-dev-tự-chọn"
 flask init-db
 flask train-model
 flask run --host 127.0.0.1 --port 5000
 ```
 
-Mở `http://127.0.0.1:5000`. Seed tạo hai tài khoản **DEMO** `admin_demo` và `covan_demo`, cùng mật khẩu truyền qua `DEMO_ADMIN_PASSWORD`; mật khẩu không nằm trong source. Đăng nhập admin rồi bấm “Tải dữ liệu demo” nếu muốn chủ động dùng dữ liệu giả lập.
+Mở `http://127.0.0.1:5000`. Môi trường DEMO/development có hai tài khoản: **ADMIN** `admin` / `Admin@123` và **CỐ VẤN** `covan` / `Covan@123`. Password chỉ được lưu dạng hash trong database. `flask init-db` tạo mới hoặc cập nhật an toàn hai tài khoản này; chỉ dùng chúng cho DEMO/development.
 
 ## Import CSV
 
@@ -61,6 +60,18 @@ pytest -q
 Không có dataset thật của Đại học Đại Nam trong project. Dữ liệu `DEMO###` và dữ liệu train được ghi rõ là giả lập phục vụ kiểm thử. Metrics trong `metadata.json` được sinh từ lần train thật trên synthetic dataset, không đại diện hiệu quả thực tế. Khi có dữ liệu hợp pháp, import CSV và huấn luyện lại theo quy trình quản trị dữ liệu.
 
 ## Troubleshooting
+
+Ứng dụng tự nạp `.env` tại thư mục gốc project khi chạy bằng Python hoặc Flask CLI; biến môi trường đã đặt được ưu tiên. Không sao chép đè `.env` khi đã cấu hình. Đặt `SECRET_KEY` ngẫu nhiên ổn định và giữ `.env` ngoài Git. `flask init-db` đồng bộ lại hash của hai tài khoản DEMO theo thông tin ở trên, bao gồm khi nâng cấp từ các tên tài khoản demo cũ.
+
+Chạy trực tiếp trên Windows, không cần kích hoạt venv:
+
+```powershell
+.\.venv\Scripts\python.exe run.py
+```
+
+Kiểm tra server đang chạy bằng `.\.venv\Scripts\python.exe scripts/verify_local.py`. Script đọc mật khẩu từ `.env`, kiểm tra HTTP thật, hai vai trò và CSRF; tạo dữ liệu DEMO nếu chưa có, chạy dự báo và thêm lịch sử vào database local. Chỉ chạy script này trên môi trường demo.
+
+Logs/PID trong `instance`, model artifact và `.env` không được theo dõi bởi Git. Artifact được tạo lại bằng `flask train-model`; đường dẫn trong metadata database lưu tương đối theo project.
 
 - `Chưa có model`: chạy `flask train-model`.
 - MySQL từ chối kết nối: kiểm tra service, user/password và `DATABASE_URL`; bỏ biến để chạy SQLite dev.

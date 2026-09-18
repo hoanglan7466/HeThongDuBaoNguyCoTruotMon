@@ -2,7 +2,7 @@
 
 ## Chuẩn bị
 
-Khởi động bằng lệnh duy nhất trong README, mở `http://127.0.0.1:5000`, dùng tài khoản `admin_demo`. Nếu cơ sở dữ liệu trống, bấm **Tải dữ liệu demo**. Giao diện phải hiện rõ **DỮ LIỆU DEMO – KHÔNG PHẢI DỮ LIỆU THẬT**.
+Khởi động bằng lệnh duy nhất trong README, mở `http://127.0.0.1:5000`, dùng tài khoản `admin` / `Admin@123` trong môi trường DEMO/development. Nếu cơ sở dữ liệu trống, bấm **Tải dữ liệu demo**. Giao diện phải hiện rõ **DỮ LIỆU DEMO – KHÔNG PHẢI DỮ LIỆU THẬT**.
 
 ## Luồng trình bày
 

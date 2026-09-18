@@ -67,6 +67,7 @@ class Prediction(db.Model):
     __table_args__ = (
         db.CheckConstraint("probability >= 0 AND probability <= 1", name="ck_prediction_probability"),
         db.CheckConstraint("risk_level IN ('CAO','TRUNG_BINH','ON_DINH')", name="ck_prediction_risk"),
+        db.CheckConstraint("week_number >= 5", name="ck_prediction_week"),
     )
     id = db.Column(db.Integer, primary_key=True)
     enrollment_id = db.Column(db.Integer, db.ForeignKey("enrollment.id"), nullable=False, index=True)
@@ -74,6 +75,8 @@ class Prediction(db.Model):
     risk_level = db.Column(db.String(20), nullable=False, index=True)
     model_version = db.Column(db.String(60), nullable=False)
     factors_json = db.Column(db.Text, nullable=False, default="[]")
+    # Snapshot at prediction time.  Enrollment.current_week can change after import.
+    week_number = db.Column(db.Integer, nullable=False, default=5)
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
     enrollment = db.relationship("Enrollment", back_populates="predictions")
 
