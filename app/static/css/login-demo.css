@@ -1,0 +1,60 @@
+/* Final login proportions. The slogan is part of nenlogin.png and is never rendered here. */
+@media (min-width:1601px){
+  .login-right{width:38%;padding:20px 28px 26px}
+  .login-datetime{position:absolute;top:18px}
+  .login-datetime,.login-footer{width:min(550px,100%)}
+  .login-datetime{font-size:13px}
+  .login-clock{font-size:13px;font-weight:600}
+  .login-card{width:min(550px,calc(100% - 12px));margin:118px 0 20px;padding:32px 42px 34px;box-shadow:0 12px 35px rgba(20,35,60,.08)}
+  .login-card-logo{width:150px;height:100px;margin-bottom:16px}
+  .login-card h1{font-size:30px;font-weight:700;color:#17233d}
+  .login-subtitle{font-size:15px;margin:8px auto 23px;color:#5f697c}
+  .login-field{margin-bottom:14px}
+  .login-field input{height:56px;font-size:15px}
+  .login-field>svg{width:21px}
+  .login-options{margin:1px 0 18px;font-size:13px}
+  .remember input{width:18px;height:18px;min-height:18px}
+  .forgot-password{font-size:13px}
+  .login-submit{display:flex;align-items:center;justify-content:center;gap:8px;height:56px;font-size:15px;font-weight:600}
+  .login-submit svg{width:20px}
+  .login-divider{margin:20px 0 16px;font-size:13px}
+  .login-help{min-height:56px;padding:12px 16px;font-size:13px}
+  .login-help svg{width:20px;flex-basis:20px}
+  .login-footer{margin-top:auto;font-size:14px}
+}
+@media (min-width:1401px) and (max-width:1600px){
+  .login-right{width:40%;padding-top:20px}
+  .login-datetime{position:absolute;top:16px}
+  .login-datetime{font-size:13px}
+  .login-clock{font-size:13px;font-weight:600}
+  .login-card{width:min(520px,100%);margin:98px 0 18px;padding:30px 40px 32px}
+  .login-card-logo{width:144px;height:94px;margin-bottom:15px}
+  .login-card h1{font-size:29px;font-weight:700;color:#17233d}
+  .login-subtitle{font-size:15px;margin:8px auto 22px;color:#5f697c}
+  .login-options{margin-bottom:18px;font-size:13px}
+  .forgot-password{font-size:13px}
+  .login-submit{display:flex;align-items:center;justify-content:center;gap:8px;font-size:15px;font-weight:600}
+  .login-divider{margin:20px 0 16px}
+  .login-field input,.login-submit{height:55px}
+  .login-field input{font-size:15px}
+  .login-help{min-height:54px;padding:12px 14px;font-size:13px}
+  .login-footer{margin-top:auto}
+}
+@media (max-width:1400px) and (min-width:901px){
+  .login-right{padding-top:14px;padding-bottom:16px}
+  .login-datetime{position:absolute;top:10px;justify-content:flex-start;gap:20px}
+  .login-datetime{font-size:12px}
+  .login-clock{font-size:13px;font-weight:600}
+  .login-card{position:absolute;top:90px;width:min(460px,calc(100% - 48px));margin:0;padding:21px 30px 23px}
+  .login-card-logo{width:106px;height:68px;margin-bottom:8px}
+  .login-card h1{font-size:29px;font-weight:700;color:#17233d}
+  .login-subtitle{font-size:14px;margin:7px auto 17px;color:#5f697c}
+  .login-field input{font-size:15px}
+  .login-options{margin:1px 0 15px;font-size:13px}
+  .forgot-password{font-size:13px}
+  .login-submit{display:flex;align-items:center;justify-content:center;gap:8px;font-size:15px;font-weight:600}
+  .login-divider{margin:14px 0 12px}
+  .login-help{min-height:48px;padding:10px 13px;font-size:13px}
+  .login-field input,.login-submit{height:54px}
+  .login-footer{margin-top:auto}
+}

@@ -32,10 +32,26 @@ def create_app(test_config=None):
     def load_user(uid): return db.session.get(User,int(uid))
     from .routes import bp
     app.register_blueprint(bp)
-    from .models import Semester, Student
+    from .models import Alert, Enrollment, ImportBatch, Semester, Student
     @app.context_processor
     def dataset_context():
-        return {"dataset_is_demo":db.session.query(Student.id).filter(Student.is_demo.is_(True)).first() is not None,"current_semester":Semester.query.filter_by(is_current=True).order_by(Semester.id.desc()).first()}
+        semesters=Semester.query.order_by(Semester.code.desc()).all()
+        new_alerts=(Alert.query.filter_by(status="MOI").order_by(Alert.created_at.desc()).limit(5).all())
+        source_types={row[0] for row in db.session.query(ImportBatch.data_type).distinct().all()}
+        latest_batch=ImportBatch.query.order_by(ImportBatch.imported_at.desc()).first()
+        source_label={frozenset():"Chưa có dữ liệu",frozenset({"DEMO"}):"Dữ liệu demo",frozenset({"USER"}):"Dữ liệu người dùng"}.get(frozenset(source_types),"Dữ liệu hỗn hợp")
+        return {
+            "dataset_is_demo":"DEMO" in source_types,
+            "dataset_source_label":source_label,
+            "dataset_student_count":Student.query.count(),
+            "dataset_record_count":Enrollment.query.count(),
+            "dataset_latest_batch":latest_batch,
+            "demo_record_count":Student.query.filter(Student.is_demo.is_(True)).count(),
+            "current_semester":next((semester for semester in semesters if semester.is_current),None),
+            "semesters_nav":semesters,
+            "new_alert_count":Alert.query.filter_by(status="MOI").count(),
+            "new_alerts":new_alerts,
+        }
     @app.template_filter("status_label")
     def status_label(value): return {"MOI":"Mới","DA_XEM":"Đã xem","DA_XU_LY":"Đã xử lý"}.get(value,value)
     @app.template_filter("risk_label")

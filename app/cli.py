@@ -13,17 +13,34 @@ from .models import ModelVersion, User
 from .services import FEATURES
 
 def _upgrade_schema():
-    """Apply the one additive migration needed by installations without Alembic."""
-    columns = {column["name"] for column in inspect(db.engine).get_columns("prediction")}
-    if "week_number" in columns:
-        return False
-    db.session.execute(db.text("ALTER TABLE prediction ADD COLUMN week_number INTEGER NOT NULL DEFAULT 5"))
+    """Apply additive migrations for installations without Alembic."""
+    changed=False
+    prediction_columns={column["name"] for column in inspect(db.engine).get_columns("prediction")}
+    if "week_number" not in prediction_columns:
+        db.session.execute(db.text("ALTER TABLE prediction ADD COLUMN week_number INTEGER NOT NULL DEFAULT 5"))
+        if db.engine.dialect.name == "mysql": db.session.execute(db.text("UPDATE prediction p JOIN enrollment e ON e.id = p.enrollment_id SET p.week_number = e.current_week"))
+        else: db.session.execute(db.text("UPDATE prediction SET week_number = (SELECT current_week FROM enrollment WHERE enrollment.id = prediction.enrollment_id)"))
+        changed=True
+    enrollment_columns={column["name"] for column in inspect(db.engine).get_columns("enrollment")}
+    if "import_batch_id" not in enrollment_columns:
+        db.session.execute(db.text("ALTER TABLE enrollment ADD COLUMN import_batch_id INTEGER NULL")); changed=True
+    batch_columns={column["name"] for column in inspect(db.engine).get_columns("import_batch")} if inspect(db.engine).has_table("import_batch") else set()
+    for name, definition in {
+        "success_count":"INTEGER NOT NULL DEFAULT 0",
+        "failed_count":"INTEGER NOT NULL DEFAULT 0",
+        "status":"VARCHAR(20) NOT NULL DEFAULT 'COMPLETED'",
+    }.items():
+        if name not in batch_columns:
+            db.session.execute(db.text(f"ALTER TABLE import_batch ADD COLUMN {name} {definition}")); changed=True
     if db.engine.dialect.name == "mysql":
-        db.session.execute(db.text("UPDATE prediction p JOIN enrollment e ON e.id = p.enrollment_id SET p.week_number = e.current_week"))
-    else:
-        db.session.execute(db.text("UPDATE prediction SET week_number = (SELECT current_week FROM enrollment WHERE enrollment.id = prediction.enrollment_id)"))
-    db.session.commit()
-    return True
+        unique_constraints=inspect(db.engine).get_unique_constraints("enrollment")
+        old=next((item for item in unique_constraints if set(item.get("column_names") or [])=={"student_id","course_id","semester_id"}),None)
+        weekly=next((item for item in unique_constraints if set(item.get("column_names") or [])=={"student_id","course_id","semester_id","current_week"}),None)
+        if old and old.get("name"):
+            db.session.execute(db.text(f"ALTER TABLE enrollment DROP INDEX `{old['name']}`")); changed=True
+        if not weekly:
+            db.session.execute(db.text("ALTER TABLE enrollment ADD CONSTRAINT uq_enrollment_snapshot UNIQUE (student_id, course_id, semester_id, current_week)")); changed=True
+    db.session.commit(); return changed
 
 def register_commands(app):
     app.cli.add_command(init_db); app.cli.add_command(train_model)

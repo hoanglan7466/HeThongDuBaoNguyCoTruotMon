@@ -1,7 +1,7 @@
 import csv, io, joblib, pytest
 from sklearn.ensemble import RandomForestClassifier
 from app.extensions import db
-from app.models import Alert, Course, EmailLog, Enrollment, Prediction, Recommendation, Semester, Student, User
+from app.models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, Prediction, Recommendation, Semester, Student, User
 from app.services import FEATURES, import_rows, predict_enrollment, risk_level, validate_csv
 
 def test_health(client):
@@ -35,8 +35,8 @@ def test_prediction_and_alert(app,tmp_path):
         p=predict_enrollment(e); assert p.probability>=.65 and p.week_number==5 and Alert.query.count()==1
         assert Prediction.query.count()==1 and db.session.execute(db.text("SELECT 1")).scalar()==1
         assert Recommendation.query.count()>=1 and EmailLog.query.filter_by(status="DEV_PREVIEW").count()==0
-        first_recommendations=Recommendation.query.count(); predict_enrollment(e)
-        assert Alert.query.count()==1 and Recommendation.query.count()==first_recommendations
+        first_recommendations=Recommendation.query.count(); predict_enrollment(e); predict_enrollment(e)
+        assert Prediction.query.count()==1 and Alert.query.count()==1 and Recommendation.query.count()==first_recommendations
 
 def test_prediction_requires_week_five(app, tmp_path):
     with app.app_context():
@@ -145,7 +145,7 @@ def test_demo_seed_creates_complete_demo_flow(app,auth):
     assert response.status_code==200 and "DỮ LIỆU DEMO" in response.text
     with app.app_context():
         assert Student.query.filter_by(is_demo=True).count()==30
-        assert Prediction.query.count()==18 and Recommendation.query.count()>=18
+        assert Prediction.query.count()==26 and Recommendation.query.count()>=26
         assert Alert.query.count()>0 and EmailLog.query.filter_by(status="DEV_PREVIEW").count()==Alert.query.count()
         weeks={value[0] for value in db.session.query(Enrollment.current_week).all()}
         assert {1,2,3,4,5,6} <= weeks
@@ -229,3 +229,113 @@ def test_init_db_syncs_demo_accounts(app):
         advisor=User.query.filter_by(username='covan').first()
         assert admin and admin.role=='ADMIN' and admin.check_password('Admin@123')
         assert advisor and advisor.role=='COVAN' and advisor.check_password('Covan@123')
+
+def test_weekly_snapshots_and_exact_duplicate_are_atomic(app, auth):
+    first="WEEKLY1,Nguyễn Minh Anh,CNTT01,weekly1@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1,1,8,95,0"
+    second="WEEKLY1,Nguyễn Minh Anh,CNTT01,weekly1@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1,2,7.8,92,1"
+    rows,errors=validate_csv(_csv(first+"\n"+second)); assert not errors
+    with app.app_context():
+        count,batch=import_rows(rows,filename="weekly.csv",imported_by=1)
+        assert count==2 and batch.data_type=="USER" and batch.status=="COMPLETED"
+        assert {e.current_week for e in Enrollment.query.all()}=={1,2}
+        with pytest.raises(ValueError): import_rows([rows[0]],filename="duplicate.csv",imported_by=1)
+        assert Enrollment.query.count()==2 and ImportBatch.query.count()==1
+
+def test_preview_then_confirm_creates_user_batch(app, auth):
+    upload={"file":(_csv("USR01,Lê Thu Hà,CNTT02,usr01@example.test,AI101,Trí tuệ nhân tạo,2026A,Học kỳ 1,5,7.5,88,1"),"nguoi_dung.csv")}
+    preview=auth.post("/data/import",data=upload,content_type="multipart/form-data")
+    assert preview.status_code==200 and "Xem trước dữ liệu" in preview.text and "USR01" in preview.text
+    with app.app_context(): assert Enrollment.query.count()==0
+    result=auth.post("/data/import/confirm",follow_redirects=True)
+    assert result.status_code==200 and "Người dùng" in result.text
+    with app.app_context():
+        batch=ImportBatch.query.one()
+        assert batch.filename=="nguoi_dung.csv" and batch.data_type=="USER" and batch.record_count==1
+        assert AuditLog.query.filter_by(action="IMPORT_DATA").count()==1
+
+def test_invalid_import_does_not_mutate_database(app, auth):
+    bad={"file":(_csv("BAD01,Tên lỗi,C1,bad@example.test,M1,Môn 1,HK1,Học kỳ 1,11,12,101,-1"),"bad.csv")}
+    response=auth.post("/data/import",data=bad,content_type="multipart/form-data")
+    assert response.status_code==200 and "Không thể xem trước tệp" in response.text
+    with app.app_context(): assert Student.query.count()==0 and Enrollment.query.count()==0 and ImportBatch.query.count()==0
+
+def test_delete_one_batch_preserves_other_batch(app, auth):
+    with app.app_context():
+        one,_=validate_csv(_csv("KEEP1,Phạm Quốc Bảo,C1,keep@example.test,M1,Môn 1,HK1,Học kỳ 1,1,8,90,0"))
+        two,_=validate_csv(_csv("KEEP1,Phạm Quốc Bảo,C1,keep@example.test,M1,Môn 1,HK1,Học kỳ 1,2,7,85,1"))
+        _,first=import_rows(one,filename="one.csv",imported_by=1)
+        import_rows(two,filename="two.csv",imported_by=1); first_id=first.id
+    response=auth.post(f"/data/batches/{first_id}/delete",follow_redirects=True)
+    assert response.status_code==200
+    with app.app_context():
+        assert Student.query.filter_by(student_code="KEEP1").count()==1
+        assert Enrollment.query.count()==1 and Enrollment.query.one().current_week==2
+        assert ImportBatch.query.count()==1 and AuditLog.query.filter_by(action="DELETE_IMPORT_BATCH").count()==1
+
+def test_reset_demo_removes_only_orphan_reference_data(app, auth):
+    with app.app_context():
+        demo,_=validate_csv(_csv("DEMOZ,Đỗ Thành Nam,C1,demoz@example.test,DEMO101,Môn demo,HKDEMO,Học kỳ demo,5,6,80,1"))
+        user,_=validate_csv(_csv("USERZ,Vũ Khánh Linh,C2,userz@example.test,USER101,Môn người dùng,HKUSER,Học kỳ người dùng,5,8,95,0"))
+        import_rows(demo,is_demo=True,filename="demo.csv",imported_by=1)
+        import_rows(user,filename="user.csv",imported_by=1)
+    assert auth.post('/data/reset-demo',follow_redirects=True).status_code==200
+    with app.app_context():
+        assert Student.query.filter_by(student_code="DEMOZ").count()==0
+        assert Course.query.filter_by(code="DEMO101").count()==0 and Semester.query.filter_by(code="HKDEMO").count()==0
+        assert Student.query.filter_by(student_code="USERZ").count()==1
+        assert Course.query.filter_by(code="USER101").count()==1 and Semester.query.filter_by(code="HKUSER").count()==1
+
+def test_loading_demo_twice_does_not_duplicate(app, auth):
+    first=auth.post('/data/seed-demo',follow_redirects=True)
+    assert first.status_code==200
+    with app.app_context(): before=(Student.query.count(),Enrollment.query.count(),ImportBatch.query.count())
+    second=auth.post('/data/seed-demo',follow_redirects=True)
+    assert second.status_code==200 and "đã tồn tại" in second.text
+    with app.app_context(): assert (Student.query.count(),Enrollment.query.count(),ImportBatch.query.count())==before
+
+def test_analysis_week_four_blocks_backend(app, auth):
+    with app.app_context():
+        s=Student(student_code="BLOCK4",full_name="Tuần Bốn",class_name="C1"); c=Course(code="B4",name="Môn tuần 4"); sem=Semester(code="B4",name="Học kỳ B4")
+        db.session.add_all([s,c,sem]); db.session.flush(); db.session.add(Enrollment(student=s,course=c,semester=sem,current_week=4,score=6,attendance_rate=80,late_submissions=1)); db.session.commit(); course_id=c.id; semester_id=sem.id
+    page=auth.get(f"/analysis?semester_id={semester_id}&course_id={course_id}&week=4")
+    assert page.status_code==200 and "Hệ thống bắt đầu dự báo nguy cơ từ tuần 5" in page.text
+    result=auth.post("/predict/batch",data={"semester_id":semester_id,"course_id":course_id,"week":4},follow_redirects=True)
+    assert "Hệ thống bắt đầu dự báo nguy cơ từ tuần 5" in result.text
+    with app.app_context(): assert Prediction.query.count()==0
+
+def test_batch_prediction_isolates_course_and_future_week(app, auth):
+    with app.app_context():
+        import pandas as pd
+        model=RandomForestClassifier(n_estimators=20,random_state=42).fit(pd.DataFrame([[2,55,5],[9,98,0]],columns=FEATURES),[1,0])
+        joblib.dump({"model":model,"metadata":{"version":"scope-v1","features":FEATURES}},app.config["MODEL_PATH"])
+        student=Student(student_code="SCOPE1",full_name="Nguyễn Hải An",class_name="C1"); c1=Course(code="SC1",name="Môn A"); c2=Course(code="SC2",name="Môn B"); sem=Semester(code="SCOPE",name="Học kỳ Scope")
+        db.session.add_all([student,c1,c2,sem]); db.session.flush()
+        week7=Enrollment(student=student,course=c1,semester=sem,current_week=7,score=2,attendance_rate=55,late_submissions=5)
+        future=Enrollment(student=student,course=c1,semester=sem,current_week=8,score=9,attendance_rate=98,late_submissions=0)
+        other_course=Enrollment(student=student,course=c2,semester=sem,current_week=7,score=9,attendance_rate=98,late_submissions=0)
+        db.session.add_all([week7,future,other_course]); db.session.commit(); course_id=c1.id; semester_id=sem.id; week7_id=week7.id
+    for _ in range(3):
+        response=auth.post("/predict/batch",data={"semester_id":semester_id,"course_id":course_id,"week":7},follow_redirects=True)
+        assert response.status_code==200 and "Đã hoàn thành dự báo cho 1 sinh viên" in response.text
+    with app.app_context():
+        prediction=Prediction.query.one()
+        assert prediction.enrollment_id==week7_id and prediction.week_number==7 and prediction.probability>=0
+        assert Alert.query.count()<=1
+
+def test_role_avatars_and_student_empty_states(app, client, auth):
+    admin_page=auth.get('/students')
+    assert admin_page.status_code==200
+    assert admin_page.text.count('/static/css/images/admin.png')==3
+    assert '/static/css/images/covan.png' not in admin_page.text
+    assert 'Chưa có dữ liệu sinh viên' in admin_page.text
+    with app.app_context():
+        advisor=User(username='avatar-covan',full_name='Cố vấn',role='COVAN'); advisor.set_password('testpass'); db.session.add(advisor)
+        student=Student(student_code='VISIBLE1',full_name='Sinh Viên Hiển Thị',class_name='C1'); db.session.add(student); db.session.commit()
+    client.post('/logout')
+    client.post('/login',data={'username':'avatar-covan','password':'testpass'})
+    advisor_page=client.get('/students')
+    assert advisor_page.text.count('/static/css/images/covan.png')==3
+    assert '/static/css/images/admin.png' not in advisor_page.text
+    assert 'Thêm sinh viên' not in advisor_page.text and 'row-menu-trigger' not in advisor_page.text
+    no_match=client.get('/students?q=KHONGTONTAI')
+    assert 'Không tìm thấy sinh viên phù hợp.' in no_match.text and 'Đặt lại bộ lọc' in no_match.text

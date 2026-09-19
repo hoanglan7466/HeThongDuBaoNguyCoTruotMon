@@ -43,7 +43,7 @@ class Semester(db.Model):
 
 class Enrollment(db.Model):
     __table_args__ = (
-        db.UniqueConstraint("student_id", "course_id", "semester_id"),
+        db.UniqueConstraint("student_id", "course_id", "semester_id", "current_week", name="uq_enrollment_snapshot"),
         db.CheckConstraint("score >= 0 AND score <= 10", name="ck_enrollment_score"),
         db.CheckConstraint("attendance_rate >= 0 AND attendance_rate <= 100", name="ck_enrollment_attendance"),
         db.CheckConstraint("late_submissions >= 0", name="ck_enrollment_late"),
@@ -57,14 +57,38 @@ class Enrollment(db.Model):
     score = db.Column(db.Float, nullable=False)
     attendance_rate = db.Column(db.Float, nullable=False)
     late_submissions = db.Column(db.Integer, nullable=False, default=0)
+    import_batch_id = db.Column(db.Integer, db.ForeignKey("import_batch.id"), index=True)
     final_failed = db.Column(db.Boolean)
     student = db.relationship("Student", back_populates="enrollments")
     course = db.relationship("Course")
     semester = db.relationship("Semester")
     predictions = db.relationship("Prediction", back_populates="enrollment", cascade="all, delete-orphan")
+    import_batch = db.relationship("ImportBatch", back_populates="enrollments")
+
+class ImportBatch(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    batch_id = db.Column(db.String(36), unique=True, nullable=False, index=True)
+    filename = db.Column(db.String(255), nullable=False)
+    data_type = db.Column(db.String(10), nullable=False)  # DEMO or USER
+    imported_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+    imported_by = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    record_count = db.Column(db.Integer, nullable=False)
+    success_count = db.Column(db.Integer, nullable=False, default=0)
+    failed_count = db.Column(db.Integer, nullable=False, default=0)
+    status = db.Column(db.String(20), nullable=False, default="COMPLETED")
+    user = db.relationship("User")
+    enrollments = db.relationship("Enrollment", back_populates="import_batch")
+
+class AuditLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    action = db.Column(db.String(50), nullable=False)
+    target = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
 
 class Prediction(db.Model):
     __table_args__ = (
+        db.UniqueConstraint("enrollment_id", "model_version", name="uq_prediction_snapshot_model"),
         db.CheckConstraint("probability >= 0 AND probability <= 1", name="ck_prediction_probability"),
         db.CheckConstraint("risk_level IN ('CAO','TRUNG_BINH','ON_DINH')", name="ck_prediction_risk"),
         db.CheckConstraint("week_number >= 5", name="ck_prediction_week"),

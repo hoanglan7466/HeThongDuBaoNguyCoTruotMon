@@ -31,7 +31,7 @@ def preflight():
 
     from app import create_app
     from app.extensions import db
-    from app.models import ModelVersion, Student
+    from app.models import Enrollment, ModelVersion, Student
     from app.services import model_bundle
 
     app = create_app()
@@ -44,10 +44,13 @@ def preflight():
         assert bundle["metadata"].get("version"), "Model metadata has no version"
         assert ModelVersion.query.filter_by(is_active=True).first(), "No active model record"
         print(f"Preflight OK: Python {sys.version_info.major}.{sys.version_info.minor}; MySQL/schema/model ready; students={Student.query.count()}")
+        snapshot = Enrollment.query.filter(Enrollment.current_week >= 5).order_by(Enrollment.current_week.desc()).first()
+        assert snapshot, "No week 5+ snapshot is available for live prediction verification"
+        return {"semester_id": snapshot.semester_id, "course_id": snapshot.course_id, "week": snapshot.current_week}
 
 
 def main():
-    preflight()
+    prediction_scope = preflight()
     credentials = (("admin", "Admin@123"), ("covan", "Covan@123"))
     for username, password in credentials:
         client = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
@@ -75,8 +78,9 @@ def main():
         assert status == 200 and url == BASE + "/", "Login failed"
         if username == "admin":
             assert request("/data/seed-demo", {"csrf_token": token(body)})[0] == 200
-            status, body, _ = request("/predict/batch", {"csrf_token": token(body)})
-            assert status == 200 and "bỏ qua 0" in body
+            analysis_body = request("/analysis")[1]
+            status, body, _ = request("/predict/batch", {"csrf_token": token(analysis_body), **prediction_scope})
+            assert status == 200 and "Đã hoàn thành dự báo cho" in body
         for path in ("/", "/students", "/students?q=DEMO001", "/students?page=2", "/academic-data", "/analysis", "/alerts", "/reports", "/reports/export.csv", "/model", "/data/template.csv", "/static/css/app.css"):
             assert request(path)[0] == 200, path
         for path in ("/data/import", "/admin/users", "/settings"):
@@ -87,9 +91,8 @@ def main():
         assert request("/missing-page")[0] == 404
         assert request("/students/99999999")[0] == 404
         body = request("/analysis")[1]
-        prediction_path = re.search(r'action="(/predict/\d+)"', body).group(1)
-        status, body, _ = request(prediction_path, {"csrf_token": token(body)})
-        assert status == 200 and "Đã lưu dự báo" in body, "Prediction failed"
+        status, body, _ = request("/predict/batch", {"csrf_token": token(body), **prediction_scope})
+        assert status == 200 and "Đã hoàn thành dự báo cho" in body, "Prediction failed"
         stats = json.loads(request("/api/dashboard")[1])["data"]
         print(username, "pages/login/CSRF/prediction OK", json.dumps(stats))
         assert request("/logout", {"csrf_token": token(body)})[2].endswith("/login")

@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block heading %}Cập nhật sinh viên{% endblock %}
+{% block content %}
+<div class="page-title"><div><h1>Cập nhật sinh viên</h1><p>{{ student.student_code }}</p></div><a class="button secondary" href="{{ url_for('main.student_detail', student_id=student.id) }}">Quay lại</a></div>
+<article class="panel"><form method="post" class="stack compact-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Họ và tên<input name="full_name" value="{{ student.full_name }}" required maxlength="120"></label><label>Lớp<input name="class_name" value="{{ student.class_name }}" required maxlength="50"></label><label>Email<input name="email" type="email" value="{{ student.email or '' }}" maxlength="150"></label><button type="submit">Lưu thay đổi</button></form></article>
+{% endblock %}

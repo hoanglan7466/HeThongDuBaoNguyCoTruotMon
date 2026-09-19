@@ -1,14 +1,41 @@
-import csv, io, json
+import csv, io, json, uuid
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from functools import wraps
 from flask import Blueprint, Response, abort, current_app, flash, jsonify, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 from sqlalchemy.orm import joinedload, selectinload
+from werkzeug.utils import secure_filename
 from .extensions import db
-from .models import Alert, Course, EmailLog, Enrollment, ModelVersion, Prediction, Recommendation, Semester, Student, User
-from .services import REQUIRED_COLUMNS, import_rows, model_bundle, predict_enrollment, validate_csv, smtp_configured
+from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, ModelVersion, Prediction, Recommendation, Semester, Student, User
+from .services import REQUIRED_COLUMNS, delete_enrollments, import_rows, model_bundle, predict_enrollment, validate_csv, smtp_configured
 
 bp=Blueprint("main",__name__)
+
+def _preview_path(token):
+    folder=Path(current_app.instance_path)/"import_previews"; folder.mkdir(parents=True,exist_ok=True)
+    return folder/f"{token}.json"
+
+def _save_preview(rows, filename):
+    token=str(uuid.uuid4()); path=_preview_path(token)
+    path.write_text(json.dumps({"filename":filename,"rows":rows},ensure_ascii=False),encoding="utf-8")
+    session["import_preview_token"]=token
+
+def _pop_preview():
+    token=session.pop("import_preview_token",None)
+    if not token: return None
+    path=_preview_path(token)
+    try: return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError,ValueError): return None
+    finally: path.unlink(missing_ok=True)
+
+def _import_summary(rows):
+    return {
+        "records":len(rows),
+        "students":len({row["student_code"] for row in rows}),
+        "courses":len({row["course_code"] for row in rows}),
+        "weeks":sorted({int(row["current_week"]) for row in rows}),
+    }
 def _safe_next(target):
     if not target: return False
     host=urlparse(request.host_url)
@@ -40,8 +67,14 @@ def logout(): logout_user(); return redirect(url_for("main.login"))
 @bp.get("/")
 @login_required
 def dashboard():
-    total=Student.query.count(); latest={}
-    for p in Prediction.query.options(joinedload(Prediction.enrollment).joinedload(Enrollment.course)).order_by(Prediction.enrollment_id,Prediction.created_at.desc(),Prediction.id.desc()).all(): latest.setdefault(p.enrollment_id,p)
+    course_id=request.args.get("course_id",type=int); semester_id=request.args.get("semester_id",type=int)
+    scope=Enrollment.query
+    if course_id: scope=scope.filter(Enrollment.course_id==course_id)
+    if semester_id: scope=scope.filter(Enrollment.semester_id==semester_id)
+    scoped_ids=[row[0] for row in scope.with_entities(Enrollment.id).all()]
+    total=scope.with_entities(Enrollment.student_id).distinct().count(); latest={}
+    predictions=Prediction.query.filter(Prediction.enrollment_id.in_(scoped_ids)) if scoped_ids else Prediction.query.filter(db.false())
+    for p in predictions.options(joinedload(Prediction.enrollment).joinedload(Enrollment.course)).order_by(Prediction.enrollment_id,Prediction.created_at.desc(),Prediction.id.desc()).all(): latest.setdefault(p.enrollment_id,p)
     counts={"CAO":0,"TRUNG_BINH":0,"ON_DINH":0}
     for p in latest.values(): counts[p.risk_level]+=1
     latest_predictions=list(latest.values())
@@ -51,7 +84,7 @@ def dashboard():
         week=prediction.week_number
         if week in weekly: weekly[week][prediction.risk_level]+=1
     attendance={}
-    for enrollment in Enrollment.query.options(joinedload(Enrollment.course)).all():
+    for enrollment in scope.options(joinedload(Enrollment.course)).all():
         bucket=attendance.setdefault(enrollment.course.name,{"total":0,"count":0})
         bucket["total"]+=enrollment.attendance_rate; bucket["count"]+=1
     attendance_by_course=[{"name":name,"rate":round(values["total"]/values["count"],1)} for name,values in attendance.items()]
@@ -67,7 +100,8 @@ def dashboard():
     try: model_bundle(); model_ready=True
     except (FileNotFoundError, ValueError): pass
     is_demo=Student.query.filter_by(is_demo=True).count()>0
-    return render_template("dashboard.html",total=total,counts=counts,attention=attention,alerts=Alert.query.options(joinedload(Alert.enrollment).joinedload(Enrollment.student),joinedload(Alert.enrollment).joinedload(Enrollment.course)).order_by(Alert.created_at.desc()).limit(5).all(),is_demo=is_demo,semester=semester,weekly=weekly,attendance_by_course=attendance_by_course,activities=activities,active_model=active_model,model_ready=model_ready,email_status="ĐÃ CẤU HÌNH" if smtp_configured() else "DEV MODE")
+    alerts_query=Alert.query.join(Enrollment).filter(Enrollment.id.in_(scoped_ids)) if scoped_ids else Alert.query.filter(db.false())
+    return render_template("dashboard.html",total=total,counts=counts,attention=attention,alerts=alerts_query.options(joinedload(Alert.enrollment).joinedload(Enrollment.student),joinedload(Alert.enrollment).joinedload(Enrollment.course)).order_by(Alert.created_at.desc()).limit(5).all(),is_demo=is_demo,semester=semester,weekly=weekly,attendance_by_course=attendance_by_course,activities=activities,active_model=active_model,model_ready=model_ready,email_status="ĐÃ CẤU HÌNH" if smtp_configured() else "DEV MODE",courses=Course.query.order_by(Course.code).all(),semesters=Semester.query.order_by(Semester.code.desc()).all(),course_id=course_id,semester_id=semester_id)
 
 @bp.get("/students")
 @login_required
@@ -82,7 +116,7 @@ def students():
     order={"name":Student.full_name,"class":Student.class_name}.get(sort,Student.student_code)
     page=q.distinct().order_by(order).paginate(page=request.args.get("page",1,type=int),per_page=15,error_out=False)
     classes=[r[0] for r in db.session.query(Student.class_name).distinct().order_by(Student.class_name)]
-    return render_template("students.html",page=page,term=term,class_name=class_name,course_id=course_id,semester_id=semester_id,sort=sort,classes=classes,courses=Course.query.order_by(Course.code).all(),semesters=Semester.query.order_by(Semester.code.desc()).all())
+    return render_template("students.html",page=page,total_students=Student.query.count(),term=term,class_name=class_name,course_id=course_id,semester_id=semester_id,sort=sort,classes=classes,courses=Course.query.order_by(Course.code).all(),semesters=Semester.query.order_by(Semester.code.desc()).all())
 
 @bp.get("/academic-data")
 @login_required
@@ -93,9 +127,32 @@ def academic_data():
 @bp.get("/analysis")
 @login_required
 def analysis():
-    enrollments=Enrollment.query.options(joinedload(Enrollment.student),joinedload(Enrollment.course),selectinload(Enrollment.predictions)).order_by(Enrollment.id.desc()).limit(100).all()
-    selected=request.args.get("enrollment_id",type=int)
-    return render_template("analysis.html",enrollments=enrollments,selected=selected)
+    semesters=Semester.query.order_by(Semester.is_current.desc(),Semester.code.desc()).all()
+    semester_id=request.args.get("semester_id",type=int) or (semesters[0].id if semesters else None)
+    course_query=Course.query.join(Enrollment)
+    if semester_id: course_query=course_query.filter(Enrollment.semester_id==semester_id)
+    courses=course_query.distinct().order_by(Course.code).all()
+    course_id=request.args.get("course_id",type=int) or (courses[0].id if courses else None)
+    available_weeks_query=db.session.query(Enrollment.current_week)
+    if semester_id: available_weeks_query=available_weeks_query.filter(Enrollment.semester_id==semester_id)
+    if course_id: available_weeks_query=available_weeks_query.filter(Enrollment.course_id==course_id)
+    available_weeks=sorted({row[0] for row in available_weeks_query.all()})
+    week=request.args.get("week",type=int)
+    if week is None: week=max(available_weeks,default=None)
+    term=request.args.get("q","").strip()
+    query=Enrollment.query.options(joinedload(Enrollment.student),joinedload(Enrollment.course),joinedload(Enrollment.semester),selectinload(Enrollment.predictions))
+    if semester_id: query=query.filter(Enrollment.semester_id==semester_id)
+    if course_id: query=query.filter(Enrollment.course_id==course_id)
+    if week is not None: query=query.filter(Enrollment.current_week==week)
+    if term: query=query.join(Student).filter(db.or_(Student.student_code.contains(term),Student.full_name.contains(term)))
+    enrollments=query.all(); rows=[]; counts={"CAO":0,"TRUNG_BINH":0,"ON_DINH":0}
+    for enrollment in enrollments:
+        latest=max(enrollment.predictions,key=lambda p:(p.created_at,p.id),default=None)
+        if latest: counts[latest.risk_level]+=1
+        rows.append({"enrollment":enrollment,"prediction":latest})
+    rank={"CAO":0,"TRUNG_BINH":1,"ON_DINH":2}
+    rows.sort(key=lambda row:(rank.get(row["prediction"].risk_level,3) if row["prediction"] else 3,-(row["prediction"].probability if row["prediction"] else -1),row["enrollment"].student.student_code))
+    return render_template("analysis.html",rows=rows,counts=counts,total=len({e.student_id for e in enrollments}),has_data=Enrollment.query.count()>0,semesters=semesters,courses=courses,available_weeks=available_weeks,semester_id=semester_id,course_id=course_id,week=week,term=term)
 
 @bp.get("/students/<int:student_id>")
 @login_required
@@ -119,41 +176,60 @@ def predict(enrollment_id):
 @bp.post("/predict/batch")
 @login_required
 def predict_batch():
+    semester_id=request.form.get("semester_id",type=int); course_id=request.form.get("course_id",type=int); week=request.form.get("week",type=int)
+    redirect_args={"semester_id":semester_id,"course_id":course_id,"week":week}
+    if not semester_id or not course_id or week is None:
+        flash("Vui lòng chọn học kỳ, môn học và tuần.","error"); return redirect(url_for("main.analysis",**redirect_args))
+    if week<5:
+        flash("Chưa đủ dữ liệu để dự báo. Hệ thống bắt đầu dự báo nguy cơ từ tuần 5.","error"); return redirect(url_for("main.analysis",**redirect_args))
+    enrollments=Enrollment.query.filter_by(semester_id=semester_id,course_id=course_id,current_week=week).all()
+    if not enrollments:
+        flash("Chưa có dữ liệu để dự báo cho bộ lọc này.","error"); return redirect(url_for("main.analysis",**redirect_args))
     done=skipped=0
-    for e in Enrollment.query.filter(Enrollment.current_week>=5).all():
+    for e in enrollments:
         try: predict_enrollment(e); done+=1
-        except FileNotFoundError: flash("Chưa có model. Hãy chạy lệnh train-model.","error"); return redirect(url_for("main.dashboard"))
-        except Exception: db.session.rollback(); skipped+=1
-    flash(f"Đã dự báo hàng loạt {done} ghi danh; bỏ qua {skipped}.","success")
-    return redirect(url_for("main.dashboard"))
+        except (FileNotFoundError,ValueError):
+            db.session.rollback(); current_app.logger.exception("Không thể tải hoặc chạy mô hình dự báo"); flash("Không thể tải mô hình dự báo.","error"); return redirect(url_for("main.analysis",**redirect_args))
+        except Exception:
+            db.session.rollback(); current_app.logger.exception("Prediction failed for enrollment %s",e.id); skipped+=1
+    flash(f"Đã hoàn thành dự báo cho {done} sinh viên" + (f"; bỏ qua {skipped}." if skipped else "."),"success")
+    return redirect(url_for("main.analysis",**redirect_args))
 
 @bp.route("/data/import",methods=["GET","POST"])
 @admin_required
 def import_data():
-    preview=session.get("import_preview")
+    preview=[]; errors=[]; filename=None
     if request.method=="POST":
         f=request.files.get("file")
-        if not f or not f.filename.lower().endswith(".csv"): flash("Chỉ chấp nhận tệp CSV.","error")
+        safe_name=secure_filename(f.filename) if f and f.filename else ""
+        if not f or not safe_name.lower().endswith(".csv"): flash("Chỉ chấp nhận tệp CSV.","error")
         else:
             rows,errors=validate_csv(f.stream)
-            if errors: return render_template("import.html",errors=errors,preview=[],demo_count=Student.query.filter_by(is_demo=True).count())
-            session["import_preview"]=rows; preview=rows; flash(f"Đã kiểm tra {len(rows)} dòng hợp lệ. Hãy xác nhận nhập.","success")
-    return render_template("import.html",preview=preview or [],errors=[],demo_count=Student.query.filter_by(is_demo=True).count())
+            filename=safe_name
+            if not errors:
+                _save_preview(rows,safe_name); preview=rows; flash(f"Đã kiểm tra {len(rows)} dòng hợp lệ. Hãy xác nhận nhập.","success")
+    summary={"students":Student.query.count(),"courses":Course.query.count(),"records":Enrollment.query.count(),"latest":ImportBatch.query.order_by(ImportBatch.imported_at.desc()).first()}
+    demo_file=Path(current_app.root_path).parent/"demo_data"/"du_lieu_sinh_vien_demo.csv"
+    demo_rows,demo_errors=validate_csv(demo_file.open("rb")) if demo_file.exists() else ([],[{"message":"Không tìm thấy dữ liệu demo."}])
+    return render_template("import.html",preview=preview[:15],preview_summary=_import_summary(preview) if preview else None,preview_filename=filename,errors=errors[:20],error_count=len(errors),demo_count=Student.query.filter_by(is_demo=True).count(),demo_summary=_import_summary(demo_rows) if not demo_errors else None,batches=ImportBatch.query.order_by(ImportBatch.imported_at.desc()).all(),summary=summary)
 
 @bp.post("/data/import/confirm")
 @admin_required
 def import_confirm():
-    rows=session.pop("import_preview",None)
-    if not rows: flash("Phiên xem trước đã hết hạn.","error")
+    payload=_pop_preview()
+    if not payload: flash("Phiên xem trước đã hết hạn.","error")
     else:
-        try: flash(f"Đã nhập {import_rows(rows)} bản ghi.","success")
+        try:
+            count,batch=import_rows(payload["rows"],filename=payload["filename"],imported_by=current_user.id)
+            db.session.add(AuditLog(user_id=current_user.id,action="IMPORT_DATA",target=batch.batch_id)); db.session.commit()
+            flash(f"Đã nhập {count} bản ghi (batch {batch.batch_id[:8]}).","success")
         except ValueError as e: flash(str(e),"error")
     return redirect(url_for("main.import_data"))
 
 @bp.get("/data/template.csv")
 @login_required
 def csv_template():
-    out=io.StringIO(); w=csv.writer(out); w.writerow(REQUIRED_COLUMNS); w.writerow(["SV001","Nguyễn Văn A","CNTT01","sv@example.edu.vn","ML101","Học máy","2026A","Học kỳ 1 2026",5,7.5,90,0])
+    out=io.StringIO(); w=csv.writer(out); w.writerow(REQUIRED_COLUMNS); w.writerow(["SV001","Nguyễn Văn A","CNTT01","sv001@example.test","ML101","Học máy","2026A","Học kỳ 1 2026",5,7.5,90,0])
     return Response(out.getvalue().encode("utf-8-sig"),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=mau_import.csv"})
 
 @bp.post("/data/seed-demo")
@@ -161,15 +237,14 @@ def csv_template():
 def seed_demo():
     if Student.query.filter_by(is_demo=True).first(): flash("Dữ liệu demo đã tồn tại.","error")
     else:
-        rows=[]
-        for i in range(1,31):
-            # The local DEMO set intentionally spans early and eligible weeks.
-            # Entries before week 5 remain visible but are never predicted.
-            rows.append(dict(student_code=f"DEMO{i:03d}",full_name=f"Sinh viên Demo {i:02d}",class_name="DEMO-CNTT",email=f"demo{i:03d}@example.test",course_code="ML101",course_name="Học máy ứng dụng",semester_code="DEMO-2026A",semester_name="Học kỳ demo",current_week=1+((i-1)%10),score=round(2.5+(i*1.7)%7.3,1),attendance_rate=float(55+(i*7)%46),late_submissions=i%5))
-        import_rows(rows,is_demo=True)
+        demo_file=Path(current_app.root_path).parent/"demo_data"/"du_lieu_sinh_vien_demo.csv"
+        rows,errors=validate_csv(demo_file.open("rb"))
+        if errors: flash("Tệp dữ liệu DEMO không hợp lệ.","error"); return redirect(url_for("main.import_data"))
+        _,batch=import_rows(rows,is_demo=True,filename=demo_file.name,imported_by=current_user.id)
+        db.session.add(AuditLog(user_id=current_user.id,action="LOAD_DEMO",target=batch.batch_id)); db.session.commit()
         predicted=0
         try:
-            for enrollment in Enrollment.query.join(Student).filter(Student.is_demo.is_(True), Enrollment.current_week >= 5).all():
+            for enrollment in Enrollment.query.filter(Enrollment.import_batch_id==batch.id, Enrollment.current_week >= 5).all():
                 predict_enrollment(enrollment); predicted+=1
             flash(f"Đã tải dữ liệu demo và tạo {predicted} lượt dự báo.","success")
         except FileNotFoundError:
@@ -179,18 +254,69 @@ def seed_demo():
 @bp.post("/data/reset-demo")
 @admin_required
 def reset_demo():
-    demo_students=Student.query.filter_by(is_demo=True).all()
-    if not demo_students:
+    batches=ImportBatch.query.filter_by(data_type="DEMO").all()
+    legacy_students=Student.query.filter_by(is_demo=True).filter(~Student.enrollments.any(Enrollment.import_batch_id.isnot(None))).all()
+    if not batches and not legacy_students:
         flash("Không có dữ liệu DEMO để xóa.","error")
         return redirect(url_for("main.import_data"))
-    enrollment_ids=[enrollment.id for student in demo_students for enrollment in student.enrollments]
-    if enrollment_ids:
-        Alert.query.filter(Alert.enrollment_id.in_(enrollment_ids)).delete(synchronize_session=False)
-        Recommendation.query.filter(Recommendation.enrollment_id.in_(enrollment_ids)).delete(synchronize_session=False)
-    for student in demo_students: db.session.delete(student)
-    db.session.commit()
-    flash(f"Đã xóa an toàn {len(demo_students)} sinh viên DỮ LIỆU DEMO.","success")
+    enrollments=Enrollment.query.filter(Enrollment.import_batch_id.in_([b.id for b in batches])).all() if batches else []
+    enrollments += [e for student in legacy_students for e in student.enrollments]
+    removed=len({e.student_id for e in enrollments}) + len([s for s in legacy_students if not s.enrollments])
+    delete_enrollments(enrollments,current_user,"RESET_DEMO","demo batches",commit=False)
+    for student in legacy_students:
+        if db.session.get(Student,student.id): db.session.delete(student)
+    ImportBatch.query.filter_by(data_type="DEMO").delete(synchronize_session=False); db.session.commit()
+    flash(f"Đã xóa an toàn {removed} sinh viên DỮ LIỆU DEMO.","success")
     return redirect(url_for("main.import_data"))
+
+@bp.post("/data/batches/<int:batch_id>/delete")
+@admin_required
+def delete_batch(batch_id):
+    batch=db.get_or_404(ImportBatch,batch_id); enrollments=list(batch.enrollments)
+    delete_enrollments(enrollments,current_user,"DELETE_IMPORT_BATCH",batch.filename,commit=False)
+    db.session.delete(batch); db.session.commit(); flash("Đã xóa dữ liệu thuộc batch đã chọn.","success")
+    return redirect(url_for("main.import_data"))
+
+@bp.route("/students/add",methods=["GET","POST"])
+@admin_required
+def add_student():
+    if request.method=="POST":
+        rows=[{key:request.form.get(key,"").strip() for key in REQUIRED_COLUMNS}]
+        rows[0]["score"]=request.form.get("score",""); rows[0]["attendance_rate"]=request.form.get("attendance_rate",""); rows[0]["late_submissions"]=request.form.get("late_submissions",""); rows[0]["current_week"]=request.form.get("current_week","")
+        payload=io.BytesIO((",".join(REQUIRED_COLUMNS)+"\n"+",".join(str(rows[0][k]) for k in REQUIRED_COLUMNS)+"\n").encode())
+        clean,errors=validate_csv(payload)
+        if errors: flash(errors[0]["message"],"error")
+        else:
+            try: import_rows(clean,filename="manual-entry",imported_by=current_user.id); flash("Đã thêm sinh viên.","success"); return redirect(url_for("main.students"))
+            except ValueError as e: flash(str(e),"error")
+    return render_template("student_form.html",student=None,enrollment=None,courses=Course.query.all(),semesters=Semester.query.all())
+
+@bp.route("/students/<int:student_id>/edit",methods=["GET","POST"])
+@admin_required
+def edit_student(student_id):
+    student=db.get_or_404(Student,student_id)
+    if request.method=="POST":
+        full_name=request.form.get("full_name","").strip(); class_name=request.form.get("class_name","").strip(); email=request.form.get("email","").strip() or None
+        if not full_name or not class_name:
+            flash("Họ tên và lớp là bắt buộc.","error")
+        else:
+            student.full_name=full_name; student.class_name=class_name; student.email=email; db.session.commit()
+            flash("Đã cập nhật sinh viên.","success"); return redirect(url_for("main.student_detail",student_id=student.id))
+    return render_template("student_edit.html",student=student)
+
+@bp.post("/students/<int:student_id>/delete")
+@admin_required
+def delete_student(student_id):
+    student=db.get_or_404(Student,student_id); delete_enrollments(list(student.enrollments),current_user,"DELETE_STUDENT",student.student_code)
+    return redirect(url_for("main.students"))
+
+@bp.post("/students/delete-selected")
+@admin_required
+def delete_selected_students():
+    ids=[int(value) for value in request.form.getlist("student_ids") if value.isdigit()]
+    selected=Student.query.filter(Student.id.in_(ids)).all()
+    delete_enrollments([e for s in selected for e in s.enrollments],current_user,"DELETE_STUDENTS",str(len(selected)))
+    flash(f"Đã xóa {len(selected)} sinh viên.","success"); return redirect(url_for("main.students"))
 
 @bp.get("/alerts")
 @login_required
@@ -206,6 +332,37 @@ def alert_status(alert_id):
     a=db.get_or_404(Alert,alert_id); status=request.form.get("status")
     if status not in {"MOI","DA_XEM","DA_XU_LY"}: abort(400)
     a.status=status; db.session.commit(); return redirect(url_for("main.alerts"))
+
+@bp.post("/api/alerts/bulk-status")
+@login_required
+def bulk_alert_status():
+    payload=request.get_json(silent=True) or {}; updates=payload.get("updates")
+    if not isinstance(updates,list) or not updates: return jsonify(ok=False,message="Dữ liệu thay đổi không hợp lệ."),400
+    valid={"MOI","DA_XEM","DA_XU_LY"}; ids=[]
+    try:
+        for item in updates:
+            if not isinstance(item,dict) or not isinstance(item.get("id"),int) or item.get("status") not in valid: raise ValueError
+            ids.append(item["id"])
+    except ValueError: return jsonify(ok=False,message="Trạng thái không hợp lệ."),400
+    alerts=Alert.query.filter(Alert.id.in_(ids)).all()
+    if len(alerts)!=len(set(ids)): return jsonify(ok=False,message="Không tìm thấy cảnh báo."),404
+    try:
+        wanted={item["id"]:item["status"] for item in updates}
+        for alert in alerts: alert.status=wanted[alert.id]
+        db.session.commit()
+    except Exception:
+        db.session.rollback(); return jsonify(ok=False,message="Không thể lưu thay đổi."),500
+    return jsonify(ok=True,updated=len(alerts),new_count=Alert.query.filter_by(status="MOI").count())
+
+@bp.route("/account/password",methods=["GET","POST"])
+@login_required
+def change_password():
+    if request.method=="POST":
+        current=request.form.get("current_password",""); new=request.form.get("new_password",""); confirm=request.form.get("confirm_password","")
+        if not current_user.check_password(current): flash("Mật khẩu hiện tại không đúng.","error")
+        elif len(new)<8 or new!=confirm: flash("Mật khẩu mới tối thiểu 8 ký tự và phải khớp.","error")
+        else: current_user.set_password(new); db.session.commit(); flash("Đã đổi mật khẩu.","success"); return redirect(url_for("main.dashboard"))
+    return render_template("change_password.html")
 
 def _report_query():
     query=Prediction.query.join(Enrollment).join(Student).join(Course).join(Semester)
@@ -237,10 +394,11 @@ def export_report():
 @login_required
 def model_info():
     record=ModelVersion.query.filter_by(is_active=True).order_by(ModelVersion.trained_at.desc()).first()
-    metadata=None
-    try: metadata=model_bundle()["metadata"]
+    metadata=algorithm=None
+    try:
+        bundle=model_bundle(); metadata=bundle["metadata"]; algorithm=bundle["model"].__class__.__name__
     except (FileNotFoundError,ValueError): pass
-    return render_template("model.html",model=record,metadata=metadata)
+    return render_template("model.html",model=record,metadata=metadata,algorithm=algorithm)
 
 @bp.route("/admin/users",methods=["GET","POST"])
 @admin_required
@@ -296,6 +454,25 @@ def settings():
 @bp.get("/api/dashboard")
 @login_required
 def dashboard_api():
+    course_id=request.args.get("course_id",type=int); semester_id=request.args.get("semester_id",type=int)
+    scope=Enrollment.query
+    if course_id: scope=scope.filter(Enrollment.course_id==course_id)
+    if semester_id: scope=scope.filter(Enrollment.semester_id==semester_id)
+    ids=[row[0] for row in scope.with_entities(Enrollment.id).all()]
     latest={}
-    for p in Prediction.query.order_by(Prediction.enrollment_id,Prediction.created_at.desc(),Prediction.id.desc()).all(): latest.setdefault(p.enrollment_id,p)
-    return jsonify(ok=True,data={"students":Student.query.count(),"risk":{"high":sum(p.risk_level=="CAO" for p in latest.values()),"medium":sum(p.risk_level=="TRUNG_BINH" for p in latest.values()),"stable":sum(p.risk_level=="ON_DINH" for p in latest.values())}})
+    predictions=Prediction.query.filter(Prediction.enrollment_id.in_(ids) if ids else db.false()).options(joinedload(Prediction.enrollment).joinedload(Enrollment.student),joinedload(Prediction.enrollment).joinedload(Enrollment.course)).order_by(Prediction.enrollment_id,Prediction.created_at.desc(),Prediction.id.desc()).all()
+    for prediction in predictions: latest.setdefault(prediction.enrollment_id,prediction)
+    values=list(latest.values())
+    weekly={str(week):{"high":0,"medium":0,"stable":0} for week in range(5,13)}
+    levels={"CAO":"high","TRUNG_BINH":"medium","ON_DINH":"stable"}
+    for prediction in values:
+        if prediction.week_number in range(5,13): weekly[str(prediction.week_number)][levels[prediction.risk_level]]+=1
+    attention=[]
+    for prediction in sorted(values,key=lambda item:item.probability,reverse=True)[:5]:
+        enrollment=prediction.enrollment
+        attention.append({"code":enrollment.student.student_code,"name":enrollment.student.full_name,"course":enrollment.course.name,"score":enrollment.score,"attendance":enrollment.attendance_rate,"late":enrollment.late_submissions,"level":prediction.risk_level,"probability":prediction.probability,"url":url_for("main.student_detail",student_id=enrollment.student.id)})
+    query=Alert.query.join(Enrollment).filter(Enrollment.id.in_(ids)) if ids else Alert.query.filter(db.false())
+    alerts=[]
+    for alert in query.options(joinedload(Alert.enrollment).joinedload(Enrollment.student),joinedload(Alert.enrollment).joinedload(Enrollment.course)).order_by(Alert.created_at.desc()).limit(5).all():
+        alerts.append({"code":alert.enrollment.student.student_code,"course":alert.enrollment.course.name,"title":alert.title,"created_at":alert.created_at.strftime("%d/%m %H:%M"),"url":url_for("main.student_detail",student_id=alert.enrollment.student.id)})
+    return jsonify(ok=True,data={"students":scope.with_entities(Enrollment.student_id).distinct().count(),"risk":{"high":sum(p.risk_level=="CAO" for p in values),"medium":sum(p.risk_level=="TRUNG_BINH" for p in values),"stable":sum(p.risk_level=="ON_DINH" for p in values)},"weekly":weekly,"attention":attention,"alerts":alerts})
