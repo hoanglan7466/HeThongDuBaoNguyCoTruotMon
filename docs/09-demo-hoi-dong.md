@@ -8,11 +8,11 @@ Khởi động bằng lệnh duy nhất trong README, mở `http://127.0.0.1:500
 
 1. **Đăng nhập (30 giây):** giới thiệu hai vai trò ADMIN/COVAN, session, CSRF và mật khẩu băm.
 2. **Tổng quan (45 giây):** chỉ ra tổng sinh viên, ba nhóm nguy cơ, biểu đồ, sinh viên cần chú ý và cảnh báo. Nhấn mạnh mọi KPI được truy vấn từ database.
-3. **Sinh viên (40 giây):** tìm theo MSSV/họ tên, mở hồ sơ; giới thiệu lớp, môn, điểm, chuyên cần và số lần nộp trễ.
-4. **Import (45 giây):** tải CSV mẫu, cho xem quy trình kiểm tra → xem trước → xác nhận. Nêu rõ file lỗi không ghi một phần vào database.
-5. **Dự báo (75 giây):** bấm **Chạy dự báo** tại hồ sơ. Giải thích xác suất là `predict_proba` của RandomForestClassifier, được phân nhóm theo ngưỡng cấu hình; đây là tín hiệu hỗ trợ, không phải khẳng định chắc chắn sinh viên trượt.
-6. **Hỗ trợ và cảnh báo (45 giây):** xem yếu tố liên quan, gợi ý dựa trên chỉ số thực tế và cảnh báo khi nguy cơ cao. Không có SMTP credential thì email được lưu ở `DEV_PREVIEW`, ứng dụng không lỗi.
-7. **Báo cáo (45 giây):** lọc theo sinh viên/mức nguy cơ, xuất CSV UTF-8 và mở file để đối chiếu.
+3. **Sinh viên (40 giây):** tìm theo MSSV/họ tên, mở một hồ sơ ở tuần 1–4 để chỉ quy tắc chặn dự báo, rồi mở hồ sơ từ tuần 5 để giới thiệu lớp, môn, điểm, chuyên cần và số lần nộp trễ.
+4. **Dữ liệu đến tuần 5 (30 giây):** mở Dữ liệu học tập để chỉ trường tuần. Nhấn mạnh dữ liệu `DEMO###` là giả lập, có nhiều tuần học và không phải dữ liệu thật của Đại học Đại Nam.
+5. **Dự báo (75 giây):** bấm **Chạy dự báo** trên bản ghi từ tuần 5. Giải thích xác suất là `predict_proba` của RandomForestClassifier, được phân nhóm theo ngưỡng cấu hình; đây là tín hiệu hỗ trợ, không phải khẳng định chắc chắn sinh viên trượt.
+6. **Hỗ trợ và cảnh báo (45 giây):** xem probability, các yếu tố liên quan, gợi ý dựa trên chỉ số thực tế và cảnh báo khi nguy cơ cao. Không có SMTP credential thì email được lưu ở `DEV_PREVIEW`, ứng dụng không lỗi.
+7. **Báo cáo (45 giây):** lọc theo sinh viên/mức nguy cơ, xuất CSV UTF-8 và mở file để đối chiếu snapshot tuần dự báo.
 8. **Mô hình (30 giây):** mở trang Mô hình, chỉ phiên bản và metrics thực tế của lần train. Nêu rõ tập hiện tại là dữ liệu tổng hợp phục vụ demo.
 
 ## Câu hỏi thường gặp về Random Forest

@@ -12,8 +12,42 @@ from dotenv import dotenv_values
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "http://127.0.0.1:5000"
 
+# Executing ``python scripts/verify_local.py`` sets sys.path to scripts/.
+# Put the project root first so the application package is importable on a new machine.
+import sys
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+def preflight():
+    """Check local configuration and application prerequisites without secrets."""
+    from sqlalchemy import inspect
+
+    if sys.version_info < (3, 11):
+        raise AssertionError("Python 3.11+ is required")
+    config = dotenv_values(ROOT / ".env")
+    assert config.get("DATABASE_URL"), "DATABASE_URL is missing"
+    assert config.get("SECRET_KEY") not in (None, "", "thay-bang-chuoi-ngau-nhien-dai"), "SECRET_KEY is not configured"
+
+    from app import create_app
+    from app.extensions import db
+    from app.models import ModelVersion, Student
+    from app.services import model_bundle
+
+    app = create_app()
+    with app.app_context():
+        db.session.execute(db.text("SELECT 1"))
+        required = {"user", "student", "course", "semester", "enrollment", "prediction", "alert", "recommendation", "email_log", "model_version"}
+        existing = set(inspect(db.engine).get_table_names())
+        assert required <= existing, f"Missing schema tables: {sorted(required-existing)}"
+        bundle = model_bundle()
+        assert bundle["metadata"].get("version"), "Model metadata has no version"
+        assert ModelVersion.query.filter_by(is_active=True).first(), "No active model record"
+        print(f"Preflight OK: Python {sys.version_info.major}.{sys.version_info.minor}; MySQL/schema/model ready; students={Student.query.count()}")
+
 
 def main():
+    preflight()
     credentials = (("admin", "Admin@123"), ("covan", "Covan@123"))
     for username, password in credentials:
         client = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))

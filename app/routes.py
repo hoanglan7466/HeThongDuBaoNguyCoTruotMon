@@ -163,11 +163,13 @@ def seed_demo():
     else:
         rows=[]
         for i in range(1,31):
-            rows.append(dict(student_code=f"DEMO{i:03d}",full_name=f"Sinh viên Demo {i:02d}",class_name="DEMO-CNTT",email=f"demo{i:03d}@example.test",course_code="ML101",course_name="Học máy ứng dụng",semester_code="DEMO-2026A",semester_name="Học kỳ demo",current_week=5+(i%5),score=round(2.5+(i*1.7)%7.3,1),attendance_rate=float(55+(i*7)%46),late_submissions=i%5))
+            # The local DEMO set intentionally spans early and eligible weeks.
+            # Entries before week 5 remain visible but are never predicted.
+            rows.append(dict(student_code=f"DEMO{i:03d}",full_name=f"Sinh viên Demo {i:02d}",class_name="DEMO-CNTT",email=f"demo{i:03d}@example.test",course_code="ML101",course_name="Học máy ứng dụng",semester_code="DEMO-2026A",semester_name="Học kỳ demo",current_week=1+((i-1)%10),score=round(2.5+(i*1.7)%7.3,1),attendance_rate=float(55+(i*7)%46),late_submissions=i%5))
         import_rows(rows,is_demo=True)
         predicted=0
         try:
-            for enrollment in Enrollment.query.join(Student).filter(Student.is_demo.is_(True)).all():
+            for enrollment in Enrollment.query.join(Student).filter(Student.is_demo.is_(True), Enrollment.current_week >= 5).all():
                 predict_enrollment(enrollment); predicted+=1
             flash(f"Đã tải dữ liệu demo và tạo {predicted} lượt dự báo.","success")
         except FileNotFoundError:

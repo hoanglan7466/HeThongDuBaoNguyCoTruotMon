@@ -45,6 +45,15 @@ def test_prediction_requires_week_five(app, tmp_path):
         with pytest.raises(ValueError, match="Chưa đủ dữ liệu"): predict_enrollment(enrollment)
         assert Prediction.query.count()==0
 
+def test_prediction_allows_week_six(app, tmp_path):
+    with app.app_context():
+        import pandas as pd
+        model=RandomForestClassifier(n_estimators=10,random_state=42).fit(pd.DataFrame([[2,55,5],[9,98,0]],columns=FEATURES),[1,0])
+        joblib.dump({"model":model,"metadata":{"version":"week-six","features":FEATURES}},app.config["MODEL_PATH"])
+        s=Student(student_code="WEEK6",full_name="Week Six",class_name="C1"); c=Course(code="W6",name="Môn tuần 6"); sem=Semester(code="W6",name="Học kỳ")
+        db.session.add_all([s,c,sem]); db.session.flush(); enrollment=Enrollment(student=s,course=c,semester=sem,current_week=6,score=2,attendance_rate=55,late_submissions=5); db.session.add(enrollment); db.session.commit()
+        assert predict_enrollment(enrollment).week_number==6
+
 def _csv(body):
     header=",".join(["student_code","full_name","class_name","email","course_code","course_name","semester_code","semester_name","current_week","score","attendance_rate","late_submissions"])
     return io.BytesIO((header+"\n"+body+"\n").encode("utf-8"))
@@ -136,8 +145,10 @@ def test_demo_seed_creates_complete_demo_flow(app,auth):
     assert response.status_code==200 and "DỮ LIỆU DEMO" in response.text
     with app.app_context():
         assert Student.query.filter_by(is_demo=True).count()==30
-        assert Prediction.query.count()==30 and Recommendation.query.count()>=30
+        assert Prediction.query.count()==18 and Recommendation.query.count()>=18
         assert Alert.query.count()>0 and EmailLog.query.filter_by(status="DEV_PREVIEW").count()==Alert.query.count()
+        weeks={value[0] for value in db.session.query(Enrollment.current_week).all()}
+        assert {1,2,3,4,5,6} <= weeks
     assert auth.get("/analysis").status_code==200
     assert auth.get("/reports?risk=CAO").status_code==200
 

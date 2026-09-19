@@ -39,17 +39,33 @@ flask train-model
 flask run --host 127.0.0.1 --port 5000
 ```
 
+Trên Windows, lệnh khởi động release là:
+
+```powershell
+.\start.ps1
+```
+
+Script này kiểm tra `.venv` và `.env`, đồng bộ schema/tài khoản DEMO, chỉ train model khi artifact chưa có, rồi chạy Flask tại `http://127.0.0.1:5000`. Không dừng các tiến trình Python khác.
+
 Mở `http://127.0.0.1:5000`. Môi trường DEMO/development có hai tài khoản: **ADMIN** `admin` / `Admin@123` và **CỐ VẤN** `covan` / `Covan@123`. Password chỉ được lưu dạng hash trong database. `flask init-db` tạo mới hoặc cập nhật an toàn hai tài khoản này; chỉ dùng chúng cho DEMO/development.
 
 ## Import CSV
 
 Tải mẫu tại `/data/template.csv`. Các cột bắt buộc: `student_code, full_name, class_name, email, course_code, course_name, semester_code, semester_name, current_week, score, attendance_rate, late_submissions`. Điểm 0–10, chuyên cần 0–100, nộp trễ không âm. Dữ liệu lỗi không được ghi.
 
-## Kiểm thử
+## Kiểm thử và xác minh local
 
 ```powershell
 pytest -q
 ```
+
+Sau khi server đã chạy, thực hiện release smoke test qua HTTP thật:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\verify_local.py
+```
+
+Lệnh xác minh Python/config (không in secret), MySQL/schema, artifact/metadata Random Forest, tạo application, `/health`, CSRF, đăng nhập ADMIN/COVAN, phân quyền, dự báo, cảnh báo và báo cáo. Script dùng hai tài khoản DEMO cố định của môi trường development; không đọc hay in credential SMTP/DB.
 
 ## SMTP
 
@@ -61,7 +77,7 @@ Không có dataset thật của Đại học Đại Nam trong project. Dữ li�
 
 ## Troubleshooting
 
-Ứng dụng tự nạp `.env` tại thư mục gốc project khi chạy bằng Python hoặc Flask CLI; biến môi trường đã đặt được ưu tiên. Không sao chép đè `.env` khi đã cấu hình. Đặt `SECRET_KEY` ngẫu nhiên ổn định và giữ `.env` ngoài Git. `flask init-db` đồng bộ lại hash của hai tài khoản DEMO theo thông tin ở trên, bao gồm khi nâng cấp từ các tên tài khoản demo cũ.
+Ứng dụng tự nạp `.env` tại thư mục gốc project khi chạy bằng Python hoặc Flask CLI; biến môi trường đã đặt được ưu tiên. Không sao chép đè `.env` khi đã cấu hình. Đặt `SECRET_KEY` ngẫu nhiên ổn định và giữ `.env` ngoài Git. `flask init-db` đồng bộ lại hash của hai tài khoản DEMO theo thông tin ở trên, bao gồm khi nâng cấp từ các tên tài khoản demo cũ. Khi chuyển sang máy khác: clone project, tạo `.venv`, cài `requirements.txt`, tạo `.env` từ `.env.example`, tạo database/user MySQL, đặt `DATABASE_URL`, chạy `start.ps1`, rồi chạy `verify_local.py`.
 
 Chạy trực tiếp trên Windows, không cần kích hoạt venv:
 
