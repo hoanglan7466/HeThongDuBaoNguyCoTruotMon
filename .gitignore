@@ -15,3 +15,6 @@ pytest-cache-files-*/
 machine_learning/models/*.joblib
 machine_learning/models/*.json
 !machine_learning/models/.gitkeep
+
+# Runtime logs
+*.log
