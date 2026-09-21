@@ -1,0 +1,24 @@
+HỆ THỐNG PHÂN TÍCH KẾT QUẢ HỌC TẬP
+ĐẠI HỌC ĐẠI NAM
+
+Xin chào {{ student.full_name }},
+
+Hệ thống ghi nhận kết quả phân tích học tập của bạn:
+Môn học: {{ enrollment.course.name }}
+Tuần: {{ enrollment.current_week }}
+Mức nguy cơ: {{ prediction.risk_level|risk_label }}
+Xác suất dự báo: {{ '%.1f'|format(prediction.probability * 100) }}%
+
+Các chỉ số liên quan:
+- Điểm hiện tại: {{ '%.1f'|format(enrollment.score) }}/10
+- Tỷ lệ chuyên cần: {{ '%.0f'|format(enrollment.attendance_rate) }}%
+- Số lần nộp bài trễ: {{ enrollment.late_submissions }}
+
+Gợi ý học tập:
+{% for item in recommendations %}- {{ item.content }}
+{% endfor %}
+Đây là cảnh báo hỗ trợ học tập. Kết quả dự báo chỉ mang tính hỗ trợ và không thay thế đánh giá của giảng viên/cố vấn học tập.
+
+Trân trọng,
+Hệ thống phân tích kết quả học tập và dự báo nguy cơ trượt môn
+Đại học Đại Nam

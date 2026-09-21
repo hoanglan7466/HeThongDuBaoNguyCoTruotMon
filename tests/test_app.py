@@ -146,7 +146,7 @@ def test_demo_seed_creates_complete_demo_flow(app,auth):
     with app.app_context():
         assert Student.query.filter_by(is_demo=True).count()==30
         assert Prediction.query.count()==26 and Recommendation.query.count()>=26
-        assert Alert.query.count()>0 and EmailLog.query.filter_by(status="DEV_PREVIEW").count()==Alert.query.count()
+        assert Alert.query.count()>0 and EmailLog.query.filter_by(status="SKIPPED").count()==Alert.query.count()
         weeks={value[0] for value in db.session.query(Enrollment.current_week).all()}
         assert {1,2,3,4,5,6} <= weeks
     assert auth.get("/analysis").status_code==200
@@ -176,13 +176,62 @@ def test_smtp_partial_configuration_and_failure(app, monkeypatch):
     import smtplib
     from app.services import send_email
     with app.app_context():
-        app.config.update(SMTP_HOST='smtp.example.invalid',SMTP_USERNAME='test',SMTP_PASSWORD=None,SMTP_FROM=None)
-        assert send_email('demo@example.invalid','Test','Preview')=='DEV_PREVIEW'
-        app.config.update(SMTP_PASSWORD='test',SMTP_FROM='test@example.invalid')
+        app.config.update(MAIL_MODE='dev',SMTP_HOST='smtp.example.invalid',SMTP_USERNAME='test',SMTP_PASSWORD=None,SMTP_FROM=None)
+        assert send_email('student@example.com','Test','Preview')=='DEV_PREVIEW'
+        assert send_email('demo@example.invalid','Test','Preview')=='SKIPPED'
+        app.config.update(MAIL_MODE='smtp',SMTP_PASSWORD='test',SMTP_FROM='test@example.com')
         def fail(*args, **kwargs): raise smtplib.SMTPException('unavailable')
         monkeypatch.setattr(smtplib,'SMTP',fail)
-        assert send_email('demo@example.invalid','Test','Preview')=='FAILED'
+        assert send_email('student@example.com','Test','Preview')=='FAILED'
         assert EmailLog.query.filter_by(status='SENT').count()==0
+
+
+def test_smtp_success_and_admin_test_email(app, auth, monkeypatch):
+    import smtplib
+    from app.services import send_email
+    class FakeSMTP:
+        def __init__(self,*args,**kwargs): self.sent=[]
+        def __enter__(self): return self
+        def __exit__(self,*args): return False
+        def starttls(self): pass
+        def login(self,username,password): assert password=='secret'
+        def send_message(self,msg): self.sent.append(msg)
+    with app.app_context():
+        app.config.update(MAIL_MODE='smtp',SMTP_HOST='smtp.example.com',SMTP_USERNAME='test@example.com',SMTP_PASSWORD='secret',SMTP_FROM='test@example.com')
+        monkeypatch.setattr(smtplib,'SMTP',FakeSMTP)
+        assert send_email('student@example.com','Test','Plain',html_body='<p>HTML</p>')=='SENT'
+        assert EmailLog.query.filter_by(status='SENT').count()==1
+    response=auth.post('/settings/test-email',data={'recipient':'student@example.com'},follow_redirects=True)
+    assert response.status_code==200 and b'secret' not in response.data.lower()
+
+
+def test_covan_cannot_send_test_email(app, client):
+    from app.models import User
+    with app.app_context():
+        advisor=User(username='mail-covan',full_name='Cố vấn',role='COVAN'); advisor.set_password('CovanPass123!'); db.session.add(advisor); db.session.commit()
+    client.post('/login',data={'username':'mail-covan','password':'CovanPass123!'})
+    assert client.post('/settings/test-email',data={'recipient':'student@example.com'}).status_code==403
+
+
+def test_admin_delete_student_with_dependents_and_covan_forbidden(app, auth, client):
+    from app.models import Alert, Course, Enrollment, Prediction, Recommendation, Semester, Student
+    with app.app_context():
+        s=Student(student_code='DEL1',full_name='Delete Me',class_name='C1'); c=Course(code='DEL',name='Delete Course'); sem=Semester(code='DELSEM',name='Delete Semester'); db.session.add_all([s,c,sem]); db.session.flush(); e=Enrollment(student=s,course=c,semester=sem,current_week=5,score=2,attendance_rate=50,late_submissions=3); db.session.add(e); db.session.flush(); p=Prediction(enrollment=e,probability=.9,risk_level='CAO',model_version='test',week_number=5,factors_json='[]'); db.session.add(p); db.session.flush(); db.session.add_all([Alert(enrollment=e,prediction_id=p.id,title='test'),Recommendation(enrollment_id=e.id,category='DIEM',content='test')]); db.session.commit(); sid=s.id
+    assert auth.post(f'/students/{sid}/delete').status_code==302
+    with app.app_context():
+        assert Student.query.get(sid) is None and Enrollment.query.count()==0 and Prediction.query.count()==0 and Alert.query.count()==0 and Recommendation.query.count()==0
+        s=Student(student_code='DEL2',full_name='Delete Two',class_name='C1'); db.session.add(s); db.session.commit(); sid=s.id
+    client.get('/logout')
+    client.post('/login',data={'username':'admin','password':'StrongPass123!'})
+    assert client.post(f'/students/{sid}/delete').status_code==302
+
+
+def test_automation_settings_admin_only_and_smtp_guard(app, auth, client):
+    assert auth.post('/settings/automation',data={'key':'auto_prediction_enabled','value':'1'}).json['ok'] is True
+    app.config['MAIL_MODE']='dev'
+    assert auth.post('/settings/automation',data={'key':'auto_email_enabled','value':'1'}).status_code==400
+    client.get('/logout'); client.post('/login',data={'username':'admin','password':'StrongPass123!'})
+    assert client.post('/settings/automation',data={'key':'auto_prediction_enabled','value':'0'}).json['ok'] is True
 
 
 def test_health_checks_artifact_contents(app, client):

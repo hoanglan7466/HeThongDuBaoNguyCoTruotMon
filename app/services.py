@@ -1,15 +1,44 @@
-import csv, io, json, os, smtplib, uuid
+import csv, io, json, os, re, smtplib, threading, time, uuid
+from datetime import datetime, timezone
 from functools import lru_cache
 from email.message import EmailMessage
+from email.utils import formataddr
 from pathlib import Path
 import joblib
 import pandas as pd
-from flask import current_app
+from flask import current_app, render_template
 from .extensions import db
-from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, ModelVersion, Prediction, Recommendation, Semester, Student
+from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, ModelVersion, Prediction, Recommendation, Semester, Student, SystemSetting
 
 FEATURES = ["score", "attendance_rate", "late_submissions"]
 REQUIRED_COLUMNS = ["student_code", "full_name", "class_name", "email", "course_code", "course_name", "semester_code", "semester_name", "current_week", *FEATURES]
+DEMO_EMAIL_SUBJECT = "[Cảnh báo học tập] Thông báo nguy cơ học tập"
+DEMO_EMAIL_MESSAGE = """Xin chào sinh viên,
+
+Hệ thống ghi nhận kết quả học tập hiện tại của bạn có một số chỉ số cần được lưu ý.
+
+Môn học: Cơ sở dữ liệu
+Tuần phân tích: Tuần 5
+Mức nguy cơ: Cần theo dõi
+Xác suất dự báo: 68%
+
+Một số chỉ số học tập:
+- Điểm hiện tại: 5.8
+- Tỷ lệ chuyên cần: 72%
+- Số lần nộp bài trễ: 2
+
+Gợi ý:
+- Ôn tập lại các nội dung chưa đạt yêu cầu.
+- Cải thiện tỷ lệ tham gia lớp học.
+- Hoàn thành bài tập đúng hạn.
+- Trao đổi với cố vấn học tập nếu cần hỗ trợ.
+
+Đây là cảnh báo hỗ trợ học tập được tạo từ hệ thống phân tích dữ liệu.
+Kết quả dự báo mang tính hỗ trợ và không thay thế đánh giá của giảng viên hoặc cố vấn học tập.
+
+Trân trọng,
+Hệ thống phân tích kết quả học tập và dự báo nguy cơ trượt môn
+Đại học Đại Nam"""
 
 def risk_level(probability):
     if probability >= current_app.config["RISK_HIGH_THRESHOLD"]: return "CAO"
@@ -82,6 +111,59 @@ def delete_enrollments(enrollments, actor, action, target, commit=True):
     db.session.add(AuditLog(user_id=actor.id,action=action,target=target))
     if commit: db.session.commit()
 
+def delete_students(students, actor, action="DELETE_STUDENT"):
+    """Atomically remove students and all dependent academic data."""
+    students=list(dict.fromkeys(students)); enrollments=[e for student in students for e in list(student.enrollments)]
+    try:
+        delete_enrollments(enrollments,actor,action,",".join(s.student_code for s in students),commit=False)
+        for student in students:
+            if db.session.get(Student,student.id): db.session.delete(student)
+        db.session.commit()
+    except Exception:
+        db.session.rollback(); raise
+
+def setting_value(key, default=None):
+    row=SystemSetting.query.filter_by(key=key).first()
+    return row.value if row else default
+
+def setting_bool(key, default=False):
+    return str(setting_value(key,"1" if default else "0")).lower() in {"1","true","on","yes"}
+
+def set_setting(key, value):
+    row=SystemSetting.query.filter_by(key=key).first()
+    if not row: row=SystemSetting(key=key,value=str(value)); db.session.add(row)
+    else: row.value=str(value)
+    db.session.commit(); return row.value
+
+def automation_status():
+    return {"prediction":setting_bool("auto_prediction_enabled",False),"email":setting_bool("auto_email_enabled",False),"interval_minutes":int(setting_value("auto_prediction_interval_minutes",5)),"last_run":setting_value("automation_last_run"),"scheduler":"running"}
+
+def run_auto_pipeline(enrollment_ids):
+    if not setting_bool("auto_prediction_enabled",False): return {"predictions":0,"alerts":0,"emails":0,"skipped":0,"failed":0}
+    result={"predictions":0,"alerts":0,"emails":0,"skipped":0,"failed":0}; auto_email=setting_bool("auto_email_enabled",False)
+    for enrollment in Enrollment.query.filter(Enrollment.id.in_(list(enrollment_ids)),Enrollment.current_week>=5).all():
+        try:
+            before=Alert.query.filter_by(enrollment_id=enrollment.id).count(); predict_enrollment(enrollment,send_auto_email=auto_email); result["predictions"]+=1; after=Alert.query.filter_by(enrollment_id=enrollment.id).count(); result["alerts"]+=max(0,after-before)
+            if not auto_email: result["skipped"]+=1
+        except Exception:
+            db.session.rollback(); result["failed"]+=1
+    set_setting("automation_last_run",datetime.now(timezone.utc).isoformat())
+    return result
+
+def start_scheduler(app):
+    if app.testing or getattr(app,"_automation_scheduler_started",False): return
+    app._automation_scheduler_started=True
+    def loop():
+        while True:
+            with app.app_context():
+                interval=max(1,int(setting_value("auto_prediction_interval_minutes",5))) * 60
+                if setting_bool("auto_prediction_enabled",False):
+                    pending=Enrollment.query.filter(Enrollment.current_week>=5,~Enrollment.predictions.any()).with_entities(Enrollment.id).all()
+                    if pending: run_auto_pipeline([row[0] for row in pending])
+                else: interval=max(60,interval)
+            time.sleep(interval)
+    threading.Thread(target=loop,name="automation-scheduler",daemon=True).start()
+
 def model_bundle():
     path = Path(current_app.config["MODEL_PATH"])
     if not path.exists(): raise FileNotFoundError("Chưa có model. Hãy chạy lệnh train-model.")
@@ -108,7 +190,7 @@ def recommendations_for(e):
     if not result: result.append(("DUY_TRI", "Các chỉ số hiện ổn định; tiếp tục duy trì nhịp học và theo dõi hàng tuần."))
     return result
 
-def predict_enrollment(e):
+def predict_enrollment(e, send_auto_email=True):
     if e.current_week < 5:
         raise ValueError("Chưa đủ dữ liệu để thực hiện dự báo từ tuần 5.")
     bundle=model_bundle(); probability=float(bundle["model"].predict_proba(pd.DataFrame([[e.score,e.attendance_rate,e.late_submissions]],columns=FEATURES))[0][1])
@@ -130,18 +212,34 @@ def predict_enrollment(e):
         title=f"{e.student.full_name} có nguy cơ trượt môn {e.course.name} ở tuần {e.current_week}."
         db.session.add(Alert(enrollment=e,prediction_id=p.id,title=title)); created_alert=True
     db.session.commit()
-    if created_alert and e.student.email:
-        send_email(e.student.email,"Cảnh báo nguy cơ học tập",f"Hệ thống ghi nhận nguy cơ dự báo cao cho môn {e.course.name}. Xác suất mô hình: {probability:.1%}. Vui lòng liên hệ cố vấn để được hỗ trợ.")
+    if created_alert and e.student.email and not send_auto_email:
+        db.session.add(EmailLog(recipient=e.student.email,subject="AUTO_EMAIL_DISABLED",status="SKIPPED",preview="AUTO_EMAIL_DISABLED")); db.session.commit()
+    if created_alert and e.student.email and send_auto_email:
+        subject=f"[Cảnh báo học tập] Nguy cơ học tập - {e.course.name}"
+        context={"student":e.student,"enrollment":e,"prediction":p,"recommendations":Recommendation.query.filter_by(enrollment_id=e.id).all()}
+        plain=render_template("email/risk_alert.txt",**context)
+        html=render_template("email/risk_alert.html",**context)
+        send_email(e.student.email,subject,plain,html_body=html)
     return p
 
 def smtp_configured():
-    return all(current_app.config.get(key) for key in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"))
+    return current_app.config.get("MAIL_MODE") == "smtp" and all(current_app.config.get(key) for key in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"))
 
-def send_email(recipient, subject, body):
+def valid_email(recipient):
+    value=(recipient or "").strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",value): return False
+    domain=value.rsplit("@",1)[1].lower()
+    return not (domain.endswith(".test") or domain in {"example.invalid","localhost"})
+
+def send_email(recipient, subject, body, html_body=None):
     cfg=current_app.config
+    recipient=(recipient or "").strip()
+    if not valid_email(recipient):
+        db.session.add(EmailLog(recipient=recipient or "unknown",subject=subject,status="SKIPPED",preview="Recipient không hợp lệ hoặc thuộc domain demo.")); db.session.commit(); return "SKIPPED"
     if not smtp_configured():
-        db.session.add(EmailLog(recipient=recipient,subject=subject,status="DEV_PREVIEW",preview=body)); db.session.commit(); current_app.logger.info("EMAIL DEV %s | %s",recipient,body); return "DEV_PREVIEW"
-    msg=EmailMessage(); msg["From"]=cfg["SMTP_FROM"]; msg["To"]=recipient; msg["Subject"]=subject; msg.set_content(body)
+        db.session.add(EmailLog(recipient=recipient,subject=subject,status="DEV_PREVIEW",preview=body)); db.session.commit(); current_app.logger.info("EMAIL DEV_PREVIEW recipient=%s subject=%s",recipient,subject); return "DEV_PREVIEW"
+    msg=EmailMessage(); msg["From"]=formataddr((cfg.get("MAIL_FROM_NAME"),cfg["SMTP_FROM"])); msg["To"]=recipient; msg["Subject"]=subject; msg.set_content(body)
+    if html_body: msg.add_alternative(html_body,subtype="html")
     try:
         with smtplib.SMTP(cfg["SMTP_HOST"],cfg["SMTP_PORT"],timeout=15) as server:
             if cfg["SMTP_USE_TLS"]: server.starttls()
@@ -151,3 +249,8 @@ def send_email(recipient, subject, body):
         current_app.logger.warning("Email delivery failed; prediction remains saved.")
         return "FAILED"
     db.session.add(EmailLog(recipient=recipient,subject=subject,status="SENT")); db.session.commit(); return "SENT"
+
+def send_demo_email(recipient, subject, message):
+    """Send an admin-authored demo message without touching prediction data."""
+    html=render_template("email/demo_notification.html", message=message)
+    return send_email(recipient, subject, message, html_body=html)

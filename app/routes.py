@@ -1,4 +1,5 @@
-import csv, io, json, uuid
+import csv, io, json, time, uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from functools import wraps
@@ -7,8 +8,8 @@ from flask_login import current_user, login_required, login_user, logout_user
 from sqlalchemy.orm import joinedload, selectinload
 from werkzeug.utils import secure_filename
 from .extensions import db
-from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, ModelVersion, Prediction, Recommendation, Semester, Student, User
-from .services import REQUIRED_COLUMNS, delete_enrollments, import_rows, model_bundle, predict_enrollment, validate_csv, smtp_configured
+from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, ModelVersion, Prediction, Recommendation, Semester, Student, SystemSetting, User
+from .services import DEMO_EMAIL_MESSAGE, DEMO_EMAIL_SUBJECT, REQUIRED_COLUMNS, automation_status, delete_enrollments, delete_students, import_rows, model_bundle, predict_enrollment, run_auto_pipeline, send_demo_email, send_email, set_setting, setting_bool, valid_email, validate_csv, smtp_configured
 
 bp=Blueprint("main",__name__)
 
@@ -222,6 +223,7 @@ def import_confirm():
         try:
             count,batch=import_rows(payload["rows"],filename=payload["filename"],imported_by=current_user.id)
             db.session.add(AuditLog(user_id=current_user.id,action="IMPORT_DATA",target=batch.batch_id)); db.session.commit()
+            run_auto_pipeline([e.id for e in batch.enrollments])
             flash(f"Đã nhập {count} bản ghi (batch {batch.batch_id[:8]}).","success")
         except ValueError as e: flash(str(e),"error")
     return redirect(url_for("main.import_data"))
@@ -244,8 +246,11 @@ def seed_demo():
         db.session.add(AuditLog(user_id=current_user.id,action="LOAD_DEMO",target=batch.batch_id)); db.session.commit()
         predicted=0
         try:
-            for enrollment in Enrollment.query.filter(Enrollment.import_batch_id==batch.id, Enrollment.current_week >= 5).all():
-                predict_enrollment(enrollment); predicted+=1
+            auto_was_on=setting_bool("auto_prediction_enabled",False)
+            if auto_was_on: predicted=run_auto_pipeline([e.id for e in batch.enrollments])["predictions"]
+            else:
+                for enrollment in Enrollment.query.filter(Enrollment.import_batch_id==batch.id, Enrollment.current_week >= 5).all():
+                    predict_enrollment(enrollment); predicted+=1
             flash(f"Đã tải dữ liệu demo và tạo {predicted} lượt dự báo.","success")
         except FileNotFoundError:
             flash("Đã tải dữ liệu demo. Cần huấn luyện mô hình trước khi chạy dự báo.","success")
@@ -287,7 +292,8 @@ def add_student():
         clean,errors=validate_csv(payload)
         if errors: flash(errors[0]["message"],"error")
         else:
-            try: import_rows(clean,filename="manual-entry",imported_by=current_user.id); flash("Đã thêm sinh viên.","success"); return redirect(url_for("main.students"))
+            try:
+                count,batch=import_rows(clean,filename="manual-entry",imported_by=current_user.id); run_auto_pipeline([e.id for e in batch.enrollments]); flash("Đã thêm sinh viên.","success"); return redirect(url_for("main.students"))
             except ValueError as e: flash(str(e),"error")
     return render_template("student_form.html",student=None,enrollment=None,courses=Course.query.all(),semesters=Semester.query.all())
 
@@ -307,7 +313,8 @@ def edit_student(student_id):
 @bp.post("/students/<int:student_id>/delete")
 @admin_required
 def delete_student(student_id):
-    student=db.get_or_404(Student,student_id); delete_enrollments(list(student.enrollments),current_user,"DELETE_STUDENT",student.student_code)
+    student=db.get_or_404(Student,student_id); delete_students([student],current_user)
+    flash("Đã xóa sinh viên.","success")
     return redirect(url_for("main.students"))
 
 @bp.post("/students/delete-selected")
@@ -315,7 +322,7 @@ def delete_student(student_id):
 def delete_selected_students():
     ids=[int(value) for value in request.form.getlist("student_ids") if value.isdigit()]
     selected=Student.query.filter(Student.id.in_(ids)).all()
-    delete_enrollments([e for s in selected for e in s.enrollments],current_user,"DELETE_STUDENTS",str(len(selected)))
+    if selected: delete_students(selected,current_user,"DELETE_STUDENTS")
     flash(f"Đã xóa {len(selected)} sinh viên.","success"); return redirect(url_for("main.students"))
 
 @bp.get("/alerts")
@@ -449,7 +456,43 @@ def settings():
     bundle=None
     try: bundle=model_bundle()
     except (FileNotFoundError,ValueError): pass
-    return render_template("settings.html",database=current_app.config["SQLALCHEMY_DATABASE_URI"].split(":",1)[0],smtp="Đã cấu hình" if smtp_configured() else "DEV preview",model_ready=bundle is not None)
+    return render_template("settings.html",database=current_app.config["SQLALCHEMY_DATABASE_URI"].split(":",1)[0],smtp="Đã cấu hình SMTP" if smtp_configured() else "DEV preview",model_ready=bundle is not None,automation=automation_status(),demo_subject=DEMO_EMAIL_SUBJECT,demo_message=DEMO_EMAIL_MESSAGE)
+
+@bp.post("/settings/automation")
+@admin_required
+def update_automation():
+    key=request.form.get("key"); value=request.form.get("value")
+    if key not in {"auto_prediction_enabled","auto_email_enabled"} or value not in {"0","1"}: abort(400)
+    if key=="auto_email_enabled" and value=="1" and not smtp_configured(): return jsonify(ok=False,message="Chưa cấu hình SMTP. Vui lòng cấu hình email hệ thống trước."),400
+    set_setting(key,value); return jsonify(ok=True,automation=automation_status())
+
+@bp.post("/settings/test-email")
+@admin_required
+def test_email():
+    recipient=request.form.get("recipient","").strip()
+    if not valid_email(recipient):
+        flash("Nhập email kiểm tra hợp lệ; không cho phép địa chỉ demo hoặc domain .test.","error")
+    else:
+        status=send_email(recipient,"[TEST] Hệ thống cảnh báo học tập",f"Cấu hình SMTP đang hoạt động.\nThời gian: {datetime.now(timezone.utc).isoformat()}\nEnvironment/mode: {current_app.config.get('MAIL_MODE','dev')}")
+        flash({"SENT":"Đã gửi email kiểm tra.","DEV_PREVIEW":"Đã tạo bản xem trước email (DEV_PREVIEW).","FAILED":"Gửi email kiểm tra thất bại.","SKIPPED":"Email kiểm tra bị bỏ qua."}.get(status,"Không thể gửi email kiểm tra."),"success" if status in {"SENT","DEV_PREVIEW"} else "error")
+    return redirect(url_for("main.settings"))
+
+@bp.post("/settings/email/demo")
+@admin_required
+def demo_email():
+    recipient=request.form.get("recipient","").strip()
+    subject=request.form.get("subject","").strip()
+    message=request.form.get("message","")
+    if not smtp_configured(): return jsonify(ok=False,message="SMTP chưa được cấu hình."),400
+    if not valid_email(recipient): return jsonify(ok=False,message="Email người nhận không hợp lệ."),400
+    if not subject or len(subject)>180 or "\r" in subject or "\n" in subject: return jsonify(ok=False,message="Tiêu đề không hợp lệ."),400
+    if not message.strip() or len(message)>5000: return jsonify(ok=False,message="Nội dung không hợp lệ (1–5000 ký tự)."),400
+    now=time.time(); last=session.get("demo_email_last",0)
+    if now-last<5: return jsonify(ok=False,message="Vui lòng chờ vài giây trước khi gửi lại."),429
+    session["demo_email_last"]=now
+    status=send_demo_email(recipient,subject,message)
+    if status not in {"SENT","DEV_PREVIEW"}: return jsonify(ok=False,message="Gửi email thất bại.",status=status),502
+    return jsonify(ok=True,message="Đã gửi thông báo demo thành công.",status=status)
 
 @bp.get("/api/dashboard")
 @login_required

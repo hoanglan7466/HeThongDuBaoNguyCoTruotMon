@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="vi"><body style="margin:0;background:#f5f7fb;color:#17233c;font-family:Arial,sans-serif;line-height:1.5">
+<div style="max-width:600px;margin:24px auto;background:#fff;border-radius:12px;overflow:hidden">
+  <header style="background:#f97316;color:#fff;padding:24px"><strong>HỆ THỐNG PHÂN TÍCH KẾT QUẢ HỌC TẬP</strong><br>ĐẠI HỌC ĐẠI NAM</header>
+  <main style="padding:24px"><p>Xin chào {{ student.full_name }},</p><p>Hệ thống ghi nhận kết quả phân tích học tập của bạn:</p>
+    <table style="width:100%;border-collapse:collapse"><tr><td>Môn học</td><td><strong>{{ enrollment.course.name }}</strong></td></tr><tr><td>Tuần</td><td>{{ enrollment.current_week }}</td></tr><tr><td>Mức nguy cơ</td><td><strong style="color:{% if prediction.risk_level=='CAO' %}#dc2626{% elif prediction.risk_level=='TRUNG_BINH' %}#d97706{% else %}#16a34a{% endif %}">{{ prediction.risk_level|risk_label }}</strong></td></tr><tr><td>Xác suất</td><td>{{ '%.1f'|format(prediction.probability * 100) }}%</td></tr></table>
+    <h3>Các chỉ số liên quan</h3><p>Điểm: {{ '%.1f'|format(enrollment.score) }}/10 · Chuyên cần: {{ '%.0f'|format(enrollment.attendance_rate) }}% · Nộp trễ: {{ enrollment.late_submissions }} lần</p>
+    <h3>Gợi ý học tập</h3><ul>{% for item in recommendations %}<li>{{ item.content }}</li>{% endfor %}</ul>
+    <p>Đây là cảnh báo hỗ trợ học tập. Kết quả dự báo chỉ mang tính hỗ trợ và không thay thế đánh giá của giảng viên/cố vấn học tập.</p>
+  </main><footer style="padding:16px 24px;background:#f8fafc;color:#64748b">Trân trọng,<br>Hệ thống phân tích kết quả học tập và dự báo nguy cơ trượt môn<br>Đại học Đại Nam</footer>
+</div></body></html>

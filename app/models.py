@@ -129,6 +129,12 @@ class EmailLog(db.Model):
     preview = db.Column(db.Text)
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
 
+class SystemSetting(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    key = db.Column(db.String(80), unique=True, nullable=False, index=True)
+    value = db.Column(db.String(255), nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=now, onupdate=now, nullable=False)
+
 class ModelVersion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     version = db.Column(db.String(60), unique=True, nullable=False)

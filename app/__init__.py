@@ -21,7 +21,8 @@ def create_app(test_config=None):
         RISK_HIGH_THRESHOLD=float(os.getenv("RISK_HIGH_THRESHOLD","0.65")),
         MODEL_PATH=str(root/"machine_learning"/"models"/"random_forest.joblib"),
         SHOW_DEMO_ACCOUNTS=os.getenv("SHOW_DEMO_ACCOUNTS","true").lower()=="true",
-        SMTP_HOST=os.getenv("SMTP_HOST"),SMTP_PORT=int(os.getenv("SMTP_PORT","587")),SMTP_USERNAME=os.getenv("SMTP_USERNAME"),SMTP_PASSWORD=os.getenv("SMTP_PASSWORD"),SMTP_FROM=os.getenv("SMTP_FROM"),SMTP_USE_TLS=os.getenv("SMTP_USE_TLS","true").lower()=="true")
+        MAIL_MODE=os.getenv("MAIL_MODE","dev").lower(),MAIL_FROM=os.getenv("MAIL_FROM") or os.getenv("SMTP_FROM"),MAIL_FROM_NAME=os.getenv("MAIL_FROM_NAME","Hệ thống cảnh báo học tập"),
+        SMTP_HOST=os.getenv("SMTP_HOST"),SMTP_PORT=int(os.getenv("SMTP_PORT","587")),SMTP_USERNAME=os.getenv("SMTP_USERNAME"),SMTP_PASSWORD=os.getenv("SMTP_PASSWORD"),SMTP_FROM=os.getenv("SMTP_FROM") or os.getenv("MAIL_FROM"),SMTP_USE_TLS=os.getenv("SMTP_USE_TLS","true").lower()=="true")
     if test_config: app.config.update(test_config)
     if not 0 <= app.config["RISK_MEDIUM_THRESHOLD"] < app.config["RISK_HIGH_THRESHOLD"] <= 1:
         raise ValueError("Risk thresholds must satisfy 0 <= medium < high <= 1.")
@@ -64,11 +65,11 @@ def create_app(test_config=None):
     def health():
         try: db.session.execute(db.text("SELECT 1")); database="ok"
         except Exception: database="error"
-        from .services import model_bundle, smtp_configured
+        from .services import automation_status, model_bundle, smtp_configured
         try: model_bundle(); model="ready"
         except FileNotFoundError: model="missing"
         except Exception: model="invalid"
-        return jsonify(status="ok" if database=="ok" else "degraded",database=database,model=model,smtp="configured" if smtp_configured() else "dev-fallback"),200 if database=="ok" else 503
+        return jsonify(status="ok" if database=="ok" else "degraded",database=database,model=model,smtp="configured" if smtp_configured() else "dev-fallback",automation=automation_status()),200 if database=="ok" else 503
     @app.errorhandler(404)
     def not_found(e): return render_template("error.html",code=404,message="Không tìm thấy trang."),404
     @app.errorhandler(400)
@@ -80,4 +81,6 @@ def create_app(test_config=None):
     @app.errorhandler(500)
     def server_error(e): db.session.rollback(); return render_template("error.html",code=500,message="Hệ thống gặp sự cố. Vui lòng thử lại."),500
     with app.app_context(): db.create_all()
+    from .services import start_scheduler
+    start_scheduler(app)
     return app

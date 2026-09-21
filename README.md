@@ -69,7 +69,15 @@ Lệnh xác minh Python/config (không in secret), MySQL/schema, artifact/metada
 
 ## SMTP
 
-Đặt `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_USE_TLS` trong `.env`/environment. Thiếu cấu hình sẽ chuyển sang `DEV_PREVIEW`, không gửi email thật và không làm ứng dụng crash.
+### Cấu hình Gmail SMTP
+
+1. Bật 2-Step Verification cho tài khoản Google.
+2. Tạo Google App Password.
+3. Đặt `MAIL_MODE=smtp`, `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USE_TLS=true`.
+4. Điền `SMTP_USERNAME`, `SMTP_PASSWORD` bằng App Password và thường đặt `MAIL_FROM` bằng `SMTP_USERNAME`.
+5. Khởi động lại Flask, đăng nhập ADMIN và dùng nút **Gửi email kiểm tra** trong Cài đặt.
+
+Các biến được đọc từ `.env`/environment; không ghi credential vào source. Thiếu hoặc chưa đầy đủ cấu hình sẽ chuyển sang `DEV_PREVIEW`, không gửi email thật và không làm ứng dụng crash. Địa chỉ `.test`, `example.invalid` và recipient không hợp lệ luôn bị `SKIPPED`.
 
 ## Dữ liệu và model
 
