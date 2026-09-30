@@ -41,4 +41,62 @@
 </main>
 {% block scripts %}{% endblock %}
 <script>window.addEventListener('DOMContentLoaded',()=>{if(window.lucide)lucide.createIcons();document.querySelectorAll('[data-menu]').forEach(button=>button.addEventListener('click',event=>{event.stopPropagation();const panel=document.getElementById(button.dataset.menu);document.querySelectorAll('.top-dropdown.open').forEach(item=>{if(item!==panel)item.classList.remove('open')});panel.classList.toggle('open')}));document.addEventListener('click',()=>document.querySelectorAll('.top-dropdown.open').forEach(item=>item.classList.remove('open')));document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.top-dropdown.open').forEach(item=>item.classList.remove('open'))});document.querySelectorAll('form[data-loading]').forEach(form=>form.addEventListener('submit',()=>{const button=form.querySelector('button[type=submit],button:not([type])');if(button){button.disabled=true;button.textContent='Đang xử lý…'}}))})</script>
+<script>
+window.addEventListener('DOMContentLoaded',()=>{
+  const normalizeAttendance=()=>{
+    document.querySelectorAll('.data-table').forEach(table=>{
+      const index=[...table.querySelectorAll('thead th')].findIndex(th=>['Chuyên cần','Điểm chuyên cần'].includes(th.textContent.trim()));
+      if(index<0)return;
+      table.querySelectorAll('tbody tr').forEach(row=>{
+        const cell=row.children[index];
+        if(cell&&/^\s*\d+(?:\.0+)?%\s*$/.test(cell.textContent))cell.textContent=`${Math.round(Number.parseFloat(cell.textContent))} / 10`;
+      });
+    });
+    document.querySelectorAll('.metric').forEach(metric=>{
+      const label=metric.querySelector('span'); const value=metric.querySelector('strong');
+      if(label&&value&&label.textContent.trim()==='Chuyên cần'){
+        label.textContent='Điểm chuyên cần';
+        if(/^\s*\d+(?:\.0+)?%\s*$/.test(value.textContent))value.textContent=`${Math.round(Number.parseFloat(value.textContent))} / 10`;
+      }
+    });
+  };
+  normalizeAttendance(); new MutationObserver(normalizeAttendance).observe(document.body,{childList:true,subtree:true});
+});
+</script>
+<script>
+window.addEventListener('DOMContentLoaded',()=>{
+  const stack=document.createElement('div'); stack.className='toast-stack'; document.body.append(stack);
+  document.querySelectorAll('.toast').forEach(toast=>{
+    stack.append(toast);
+    const close=document.createElement('button'); close.type='button'; close.className='toast-close'; close.setAttribute('aria-label','Đóng thông báo'); close.textContent='×';
+    const dismiss=()=>{toast.classList.add('dismiss'); window.setTimeout(()=>toast.remove(),230);};
+    close.addEventListener('click',dismiss); toast.append(close); window.setTimeout(dismiss,5200);
+  });
+  document.querySelectorAll('input[type=file]').forEach(input=>{
+    const picker=input.closest('.file-picker'); if(!picker)return;
+    const form=input.closest('form'); let name=form?.querySelector('.file-name');
+    if(!name){name=document.createElement('span');name.className='file-name';name.hidden=true;picker.after(name);}
+    input.addEventListener('change',()=>{
+      const file=input.files?.[0]; picker.classList.toggle('has-file',Boolean(file)); name.hidden=!file;
+      if(file){const size=file.size<1024*1024?Math.ceil(file.size/1024)+' KB':(file.size/1024/1024).toFixed(1)+' MB';name.textContent='Đã chọn: '+file.name+' ('+size+')';}
+      else name.textContent='';
+    });
+  });
+});
+</script>
+<script>
+window.addEventListener('DOMContentLoaded',()=>{
+  document.querySelectorAll('form[enctype="multipart/form-data"]').forEach(form=>{
+    if(!form.querySelector('input[type=file]'))return;
+    form.addEventListener('submit',()=>{
+      const overlay=document.createElement('div'); overlay.className='import-progress';
+      overlay.innerHTML='<div class="import-progress-card" role="status"><div class="import-progress-spinner"></div><h2>Đang xử lý tệp CSV</h2><p>Đang tải tệp lên hệ thống…</p><div class="import-progress-steps"><i class="active"></i><i></i><i></i><i></i></div></div>';
+      document.body.append(overlay);
+      const messages=['Đang tải tệp lên hệ thống…','Đang kiểm tra cấu trúc cột…','Đang xác thực dữ liệu…','Đang chuẩn bị màn xem trước…'];
+      const status=overlay.querySelector('p'); const steps=[...overlay.querySelectorAll('i')]; let index=0;
+      window.setInterval(()=>{index=Math.min(index+1,messages.length-1);status.textContent=messages[index];steps[index].classList.add('active');},900);
+    },{once:true});
+  });
+});
+</script>
 </body></html>

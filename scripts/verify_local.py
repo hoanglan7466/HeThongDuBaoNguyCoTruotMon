@@ -43,10 +43,10 @@ def preflight():
         bundle = model_bundle()
         assert bundle["metadata"].get("version"), "Model metadata has no version"
         assert ModelVersion.query.filter_by(is_active=True).first(), "No active model record"
-        print(f"Preflight OK: Python {sys.version_info.major}.{sys.version_info.minor}; MySQL/schema/model ready; students={Student.query.count()}")
+        print(f"Preflight OK: Python {sys.version_info.major}.{sys.version_info.minor}; {db.engine.dialect.name}/schema/model ready; students={Student.query.count()}")
         snapshot = Enrollment.query.filter(Enrollment.current_week >= 5).order_by(Enrollment.current_week.desc()).first()
-        assert snapshot, "No week 5+ snapshot is available for live prediction verification"
-        return {"semester_id": snapshot.semester_id, "course_id": snapshot.course_id, "week": snapshot.current_week}
+        return ({"semester_id": snapshot.semester_id, "course_id": snapshot.course_id, "week": snapshot.current_week}
+                if snapshot else None)
 
 
 def main():
@@ -78,6 +78,11 @@ def main():
         assert status == 200 and url == BASE + "/", "Login failed"
         if username == "admin":
             assert request("/data/seed-demo", {"csrf_token": token(body)})[0] == 200
+            # A fresh development database has no prediction snapshot until
+            # the DEMO dataset is seeded above.
+            if prediction_scope is None:
+                prediction_scope = preflight()
+                assert prediction_scope, "No week 5+ snapshot is available after seeding DEMO data"
             analysis_body = request("/analysis")[1]
             status, body, _ = request("/predict/batch", {"csrf_token": token(analysis_body), **prediction_scope})
             assert status == 200 and "Đã hoàn thành dự báo cho" in body

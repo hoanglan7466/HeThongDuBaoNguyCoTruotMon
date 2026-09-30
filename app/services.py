@@ -64,7 +64,7 @@ def validate_csv(stream):
             raw["score"] = float(raw["score"]); raw["attendance_rate"] = float(raw["attendance_rate"])
             raw["late_submissions"] = int(raw["late_submissions"]); raw["current_week"] = int(raw["current_week"])
             if not 0 <= raw["score"] <= 10: err.append("Điểm phải từ 0 đến 10")
-            if not 0 <= raw["attendance_rate"] <= 100: err.append("Chuyên cần phải từ 0 đến 100")
+            if not raw["attendance_rate"].is_integer() or not 1 <= raw["attendance_rate"] <= 10: err.append("Chuyên cần phải là số nguyên từ 1 đến 10")
             if raw["late_submissions"] < 0: err.append("Số lần nộp trễ không âm")
             if not 1 <= raw["current_week"] <= 10: err.append("Tuần học phải nằm trong khoảng 1–10")
             key = (code, raw["course_code"].strip(), raw["semester_code"].strip(), raw["current_week"])
@@ -94,6 +94,34 @@ def import_rows(rows, is_demo=False, filename="uploaded.csv", imported_by=None):
         db.session.commit(); return (count, batch) if batch else count
     except Exception: db.session.rollback(); raise
 
+def import_rows_batched(rows, is_demo=False, filename="uploaded.csv", imported_by=None):
+    """Import a CSV in a constant number of database queries per batch."""
+    try:
+        batch=ImportBatch(batch_id=str(uuid.uuid4()),filename=filename,data_type="DEMO" if is_demo else "USER",imported_by=imported_by,record_count=len(rows),success_count=len(rows),failed_count=0,status="COMPLETED") if imported_by else None
+        if batch: db.session.add(batch)
+        student_codes={r["student_code"] for r in rows}; course_codes={r["course_code"] for r in rows}; semester_codes={r["semester_code"] for r in rows}
+        students={item.student_code:item for item in Student.query.filter(Student.student_code.in_(student_codes)).all()} if student_codes else {}
+        courses={item.code:item for item in Course.query.filter(Course.code.in_(course_codes)).all()} if course_codes else {}
+        semesters={item.code:item for item in Semester.query.filter(Semester.code.in_(semester_codes)).all()} if semester_codes else {}
+        for r in rows:
+            if r["student_code"] not in students:
+                students[r["student_code"]]=Student(student_code=r["student_code"],full_name=r["full_name"],class_name=r["class_name"],email=r["email"] or None,is_demo=is_demo); db.session.add(students[r["student_code"]])
+            if r["course_code"] not in courses:
+                courses[r["course_code"]]=Course(code=r["course_code"],name=r["course_name"]); db.session.add(courses[r["course_code"]])
+            if r["semester_code"] not in semesters:
+                semesters[r["semester_code"]]=Semester(code=r["semester_code"],name=r["semester_name"],is_current=True); db.session.add(semesters[r["semester_code"]])
+        db.session.flush()
+        existing={(student_id,course_id,semester_id,week) for student_id,course_id,semester_id,week in db.session.query(Enrollment.student_id,Enrollment.course_id,Enrollment.semester_id,Enrollment.current_week).filter(Enrollment.student_id.in_([item.id for item in students.values()]),Enrollment.course_id.in_([item.id for item in courses.values()]),Enrollment.semester_id.in_([item.id for item in semesters.values()])).all()}
+        enrollments=[]
+        for r in rows:
+            student=students[r["student_code"]]; course=courses[r["course_code"]]; semester=semesters[r["semester_code"]]
+            if (student.id,course.id,semester.id,r["current_week"]) in existing: raise ValueError(f"Bản ghi đã tồn tại: {r['student_code']} / {r['course_code']} / tuần {r['current_week']}")
+            enrollments.append(Enrollment(student=student,course=course,semester=semester,current_week=r["current_week"],score=r["score"],attendance_rate=r["attendance_rate"],late_submissions=r["late_submissions"],import_batch=batch))
+        db.session.add_all(enrollments); db.session.commit()
+        return (len(enrollments),batch) if batch else len(enrollments)
+    except Exception:
+        db.session.rollback(); raise
+
 def delete_enrollments(enrollments, actor, action, target, commit=True):
     ids=[e.id for e in enrollments]
     if ids:
@@ -103,6 +131,9 @@ def delete_enrollments(enrollments, actor, action, target, commit=True):
     for enrollment in enrollments: db.session.delete(enrollment)
     db.session.flush()
     for student in students:
+        # The relationship collection may still contain objects marked for
+        # deletion. Reload it before deciding whether this student is orphaned.
+        db.session.expire(student, ["enrollments"])
         if not student.enrollments: db.session.delete(student)
     for course in courses:
         if not Enrollment.query.filter_by(course_id=course.id).first(): db.session.delete(course)
@@ -116,8 +147,6 @@ def delete_students(students, actor, action="DELETE_STUDENT"):
     students=list(dict.fromkeys(students)); enrollments=[e for student in students for e in list(student.enrollments)]
     try:
         delete_enrollments(enrollments,actor,action,",".join(s.student_code for s in students),commit=False)
-        for student in students:
-            if db.session.get(Student,student.id): db.session.delete(student)
         db.session.commit()
     except Exception:
         db.session.rollback(); raise
@@ -185,7 +214,7 @@ def _load_bundle(path, modified_ns):
 def recommendations_for(e):
     result=[]
     if e.score < 5: result.append(("DIEM", f"Điểm hiện tại {e.score:.1f}/10: ưu tiên ôn các nội dung còn yếu và hẹn cố vấn trong tuần này."))
-    if e.attendance_rate < 80: result.append(("CHUYEN_CAN", f"Chuyên cần hiện tại {e.attendance_rate:.0f}%: lập kế hoạch tham dự để đạt tối thiểu 80%."))
+    if e.attendance_rate < 8: result.append(("CHUYEN_CAN", f"Điểm chuyên cần hiện tại {e.attendance_rate:.0f}/10: lập kế hoạch tham dự để đạt tối thiểu 8/10."))
     if e.late_submissions >= 2: result.append(("NOP_BAI", f"Đã nộp trễ {e.late_submissions} lần: chia nhỏ bài tập và đặt hạn nhắc trước 48 giờ."))
     if not result: result.append(("DUY_TRI", "Các chỉ số hiện ổn định; tiếp tục duy trì nhịp học và theo dõi hàng tuần."))
     return result
@@ -196,7 +225,7 @@ def predict_enrollment(e, send_auto_email=True):
     bundle=model_bundle(); probability=float(bundle["model"].predict_proba(pd.DataFrame([[e.score,e.attendance_rate,e.late_submissions]],columns=FEATURES))[0][1])
     level=risk_level(probability); factors=[]
     if e.score<5: factors.append("điểm hiện tại thấp")
-    if e.attendance_rate<80: factors.append("tỷ lệ chuyên cần thấp")
+    if e.attendance_rate<8: factors.append("điểm chuyên cần thấp")
     if e.late_submissions>=2: factors.append("nhiều lần nộp bài trễ")
     version=bundle["metadata"]["version"]
     p=Prediction.query.filter_by(enrollment_id=e.id,model_version=version).order_by(Prediction.id.desc()).first()

@@ -20,7 +20,7 @@ def test_permission(app,client):
 
 def test_csv_validation():
     header="student_code,full_name,class_name,email,course_code,course_name,semester_code,semester_name,current_week,score,attendance_rate,late_submissions\n"
-    rows,errors=validate_csv(io.BytesIO((header+"S01,An,C1,a@b.vn,M1,Mon,HK1,Hoc ky,5,12,90,0\n").encode()))
+    rows,errors=validate_csv(io.BytesIO((header+"S01,An,C1,a@b.vn,M1,Mon,HK1,Hoc ky,5,12,9,0\n").encode()))
     assert not rows and "Điểm" in errors[0]["message"]
 
 def test_risk_thresholds(app):
@@ -29,7 +29,7 @@ def test_risk_thresholds(app):
 def test_prediction_and_alert(app,tmp_path):
     with app.app_context():
         import pandas as pd
-        x=pd.DataFrame([[2,55,5],[3,60,4],[8,95,0],[9,100,0],[4,65,3],[7,90,1]],columns=FEATURES); y=[1,1,0,0,1,0]
+        x=pd.DataFrame([[2,5,5],[3,6,4],[8,9,0],[9,10,0],[4,6,3],[7,9,1]],columns=FEATURES); y=[1,1,0,0,1,0]
         m=RandomForestClassifier(n_estimators=20,random_state=42).fit(x,y); joblib.dump({"model":m,"metadata":{"version":"test-v1"}},app.config["MODEL_PATH"])
         s=Student(student_code="S1",full_name="SV",class_name="C1"); c=Course(code="C",name="Môn"); sem=Semester(code="HK",name="Học kỳ"); db.session.add_all([s,c,sem]); db.session.flush(); e=Enrollment(student=s,course=c,semester=sem,current_week=5,score=2,attendance_rate=55,late_submissions=5); db.session.add(e); db.session.commit()
         p=predict_enrollment(e); assert p.probability>=.65 and p.week_number==5 and Alert.query.count()==1
@@ -82,12 +82,12 @@ def test_csv_attendance_and_duplicate_validation():
     row="S1,An,C1,,M1,Mon,HK1,Hoc ky,5,5,101,0"
     rows,errors=validate_csv(_csv(row))
     assert not rows and "Chuyên cần" in errors[0]["message"]
-    valid="S1,An,C1,,M1,Mon,HK1,Hoc ky,5,5,80,0"
+    valid="S1,An,C1,,M1,Mon,HK1,Hoc ky,5,5,8,0"
     rows,errors=validate_csv(io.BytesIO((",".join(["student_code","full_name","class_name","email","course_code","course_name","semester_code","semester_name","current_week","score","attendance_rate","late_submissions"])+"\n"+valid+"\n"+valid+"\n").encode()))
     assert len(rows)==1 and any("trùng" in error["message"] for error in errors)
 
 def test_import_is_atomic_on_duplicate(app):
-    rows,errors=validate_csv(_csv("S1,An,C1,,M1,Mon,HK1,Hoc ky,5,5,80,0")); assert not errors
+    rows,errors=validate_csv(_csv("S1,An,C1,,M1,Mon,HK1,Hoc ky,5,5,8,0")); assert not errors
     with app.app_context():
         assert import_rows(rows)==1
         with pytest.raises(ValueError): import_rows(rows)
@@ -138,7 +138,7 @@ def test_advisor_can_use_workflow_but_not_admin(app,client):
 def test_demo_seed_creates_complete_demo_flow(app,auth):
     with app.app_context():
         import pandas as pd
-        x=pd.DataFrame([[1,50,6],[2,55,5],[5,78,2],[6,82,1],[9,98,0],[8,92,0]],columns=FEATURES); y=[1,1,1,0,0,0]
+        x=pd.DataFrame([[1,5,6],[2,6,5],[5,7,2],[6,8,1],[9,10,0],[8,9,0]],columns=FEATURES); y=[1,1,1,0,0,0]
         model=RandomForestClassifier(n_estimators=30,random_state=42).fit(x,y)
         joblib.dump({"model":model,"metadata":{"version":"demo-flow-v1","features":FEATURES}},app.config["MODEL_PATH"])
     response=auth.post("/data/seed-demo",follow_redirects=True)
@@ -219,7 +219,7 @@ def test_admin_delete_student_with_dependents_and_covan_forbidden(app, auth, cli
         s=Student(student_code='DEL1',full_name='Delete Me',class_name='C1'); c=Course(code='DEL',name='Delete Course'); sem=Semester(code='DELSEM',name='Delete Semester'); db.session.add_all([s,c,sem]); db.session.flush(); e=Enrollment(student=s,course=c,semester=sem,current_week=5,score=2,attendance_rate=50,late_submissions=3); db.session.add(e); db.session.flush(); p=Prediction(enrollment=e,probability=.9,risk_level='CAO',model_version='test',week_number=5,factors_json='[]'); db.session.add(p); db.session.flush(); db.session.add_all([Alert(enrollment=e,prediction_id=p.id,title='test'),Recommendation(enrollment_id=e.id,category='DIEM',content='test')]); db.session.commit(); sid=s.id
     assert auth.post(f'/students/{sid}/delete').status_code==302
     with app.app_context():
-        assert Student.query.get(sid) is None and Enrollment.query.count()==0 and Prediction.query.count()==0 and Alert.query.count()==0 and Recommendation.query.count()==0
+        assert db.session.get(Student,sid) is None and Enrollment.query.count()==0 and Prediction.query.count()==0 and Alert.query.count()==0 and Recommendation.query.count()==0
         s=Student(student_code='DEL2',full_name='Delete Two',class_name='C1'); db.session.add(s); db.session.commit(); sid=s.id
     client.get('/logout')
     client.post('/login',data={'username':'admin','password':'StrongPass123!'})
@@ -261,7 +261,7 @@ def test_admin_user_management(app, auth):
 
 def test_reset_demo_preserves_non_demo_data(app, auth):
     with app.app_context():
-        rows, errors=validate_csv(_csv('REAL1,Real,C1,,M1,Môn 1,HK1,Học kỳ 1,5,7,90,0')); assert not errors
+        rows, errors=validate_csv(_csv('REAL1,Real,C1,,M1,Môn 1,HK1,Học kỳ 1,5,7,9,0')); assert not errors
         import_rows(rows)
         demo=Student(student_code='DEMOX',full_name='Demo',class_name='D',is_demo=True); db.session.add(demo); db.session.commit()
     response=auth.post('/data/reset-demo',follow_redirects=True)
@@ -280,8 +280,8 @@ def test_init_db_syncs_demo_accounts(app):
         assert advisor and advisor.role=='COVAN' and advisor.check_password('Covan@123')
 
 def test_weekly_snapshots_and_exact_duplicate_are_atomic(app, auth):
-    first="WEEKLY1,Nguyễn Minh Anh,CNTT01,weekly1@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1,1,8,95,0"
-    second="WEEKLY1,Nguyễn Minh Anh,CNTT01,weekly1@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1,2,7.8,92,1"
+    first="WEEKLY1,Nguyễn Minh Anh,CNTT01,weekly1@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1,1,8,10,0"
+    second="WEEKLY1,Nguyễn Minh Anh,CNTT01,weekly1@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1,2,7.8,9,1"
     rows,errors=validate_csv(_csv(first+"\n"+second)); assert not errors
     with app.app_context():
         count,batch=import_rows(rows,filename="weekly.csv",imported_by=1)
@@ -291,7 +291,7 @@ def test_weekly_snapshots_and_exact_duplicate_are_atomic(app, auth):
         assert Enrollment.query.count()==2 and ImportBatch.query.count()==1
 
 def test_preview_then_confirm_creates_user_batch(app, auth):
-    upload={"file":(_csv("USR01,Lê Thu Hà,CNTT02,usr01@example.test,AI101,Trí tuệ nhân tạo,2026A,Học kỳ 1,5,7.5,88,1"),"nguoi_dung.csv")}
+    upload={"file":(_csv("USR01,Lê Thu Hà,CNTT02,usr01@example.test,AI101,Trí tuệ nhân tạo,2026A,Học kỳ 1,5,7.5,9,1"),"nguoi_dung.csv")}
     preview=auth.post("/data/import",data=upload,content_type="multipart/form-data")
     assert preview.status_code==200 and "Xem trước dữ liệu" in preview.text and "USR01" in preview.text
     with app.app_context(): assert Enrollment.query.count()==0
@@ -310,8 +310,8 @@ def test_invalid_import_does_not_mutate_database(app, auth):
 
 def test_delete_one_batch_preserves_other_batch(app, auth):
     with app.app_context():
-        one,_=validate_csv(_csv("KEEP1,Phạm Quốc Bảo,C1,keep@example.test,M1,Môn 1,HK1,Học kỳ 1,1,8,90,0"))
-        two,_=validate_csv(_csv("KEEP1,Phạm Quốc Bảo,C1,keep@example.test,M1,Môn 1,HK1,Học kỳ 1,2,7,85,1"))
+        one,_=validate_csv(_csv("KEEP1,Phạm Quốc Bảo,C1,keep@example.test,M1,Môn 1,HK1,Học kỳ 1,1,8,9,0"))
+        two,_=validate_csv(_csv("KEEP1,Phạm Quốc Bảo,C1,keep@example.test,M1,Môn 1,HK1,Học kỳ 1,2,7,8,1"))
         _,first=import_rows(one,filename="one.csv",imported_by=1)
         import_rows(two,filename="two.csv",imported_by=1); first_id=first.id
     response=auth.post(f"/data/batches/{first_id}/delete",follow_redirects=True)
@@ -323,8 +323,8 @@ def test_delete_one_batch_preserves_other_batch(app, auth):
 
 def test_reset_demo_removes_only_orphan_reference_data(app, auth):
     with app.app_context():
-        demo,_=validate_csv(_csv("DEMOZ,Đỗ Thành Nam,C1,demoz@example.test,DEMO101,Môn demo,HKDEMO,Học kỳ demo,5,6,80,1"))
-        user,_=validate_csv(_csv("USERZ,Vũ Khánh Linh,C2,userz@example.test,USER101,Môn người dùng,HKUSER,Học kỳ người dùng,5,8,95,0"))
+        demo,_=validate_csv(_csv("DEMOZ,Đỗ Thành Nam,C1,demoz@example.test,DEMO101,Môn demo,HKDEMO,Học kỳ demo,5,6,8,1"))
+        user,_=validate_csv(_csv("USERZ,Vũ Khánh Linh,C2,userz@example.test,USER101,Môn người dùng,HKUSER,Học kỳ người dùng,5,8,10,0"))
         import_rows(demo,is_demo=True,filename="demo.csv",imported_by=1)
         import_rows(user,filename="user.csv",imported_by=1)
     assert auth.post('/data/reset-demo',follow_redirects=True).status_code==200

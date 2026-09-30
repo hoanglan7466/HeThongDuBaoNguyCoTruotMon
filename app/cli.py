@@ -60,7 +60,7 @@ def _synthetic_training_data():
     academic=np.repeat(academic,snapshots); engagement=np.repeat(engagement,snapshots); deadline=np.repeat(deadline,snapshots)
     week=np.tile(np.array([5,6]),students)
     score=np.clip(7.0-1.45*academic+rng.normal(0,.9,students*snapshots)-.08*(week-5),0,10)
-    attendance=np.clip(84-10*engagement+rng.normal(0,6,students*snapshots)-.4*(week-5),45,100)
+    attendance=np.clip(np.rint(8.4-engagement+rng.normal(0,.6,students*snapshots)-.04*(week-5)),1,10)
     late=np.clip(np.rint(1.5+1.2*deadline+rng.normal(0,1.1,students*snapshots)),0,7).astype(int)
     x=pd.DataFrame({"score":score,"attendance_rate":attendance,"late_submissions":late})
     return x, np.repeat(failed,snapshots), student_id

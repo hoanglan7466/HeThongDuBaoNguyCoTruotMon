@@ -1,31 +1,31 @@
-student_code,full_name,class_name,email,course_code,course_name,semester_code,semester_name,current_week,score,attendance_rate,late_submissions
-DEMO001,Nguyễn Minh Anh,CNTT01,demo001@example.test,PY101,Lập trình Python,2026A,Học kỳ 1 2026-2027,1,8.8,96,0
-DEMO002,Trần Gia Huy,CNTT01,demo002@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1 2026-2027,2,7.4,90,1
-DEMO003,Lê Thu Hà,CNTT02,demo003@example.test,WEB101,Lập trình Web,2026A,Học kỳ 1 2026-2027,3,6.2,84,1
-DEMO004,Phạm Quốc Bảo,CNTT02,demo004@example.test,NET101,Mạng máy tính,2026A,Học kỳ 1 2026-2027,4,4.8,72,3
-DEMO005,Vũ Khánh Linh,CNTT03,demo005@example.test,AI101,Trí tuệ nhân tạo,2026A,Học kỳ 1 2026-2027,5,9.1,98,0
-DEMO006,Đỗ Thành Nam,CNTT03,demo006@example.test,DSA101,Cấu trúc dữ liệu và giải thuật,2026A,Học kỳ 1 2026-2027,6,3.9,61,5
-DEMO007,Bùi Ngọc Mai,CNTT01,demo007@example.test,ML101,Học máy ứng dụng,2026A,Học kỳ 1 2026-2027,7,5.4,78,2
-DEMO008,Hoàng Đức Anh,CNTT02,demo008@example.test,PY101,Lập trình Python,2026A,Học kỳ 1 2026-2027,8,7.9,92,0
-DEMO009,Ngô Hải Yến,CNTT03,demo009@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1 2026-2027,9,4.2,66,4
-DEMO010,Dương Nhật Minh,CNTT01,demo010@example.test,WEB101,Lập trình Web,2026A,Học kỳ 1 2026-2027,10,8.2,94,0
-DEMO011,Nguyễn Tuấn Kiệt,CNTT02,demo011@example.test,NET101,Mạng máy tính,2026A,Học kỳ 1 2026-2027,5,6.9,86,1
-DEMO012,Trần Phương Thảo,CNTT03,demo012@example.test,AI101,Trí tuệ nhân tạo,2026A,Học kỳ 1 2026-2027,6,2.8,58,6
-DEMO013,Lê Hoàng Long,CNTT01,demo013@example.test,DSA101,Cấu trúc dữ liệu và giải thuật,2026A,Học kỳ 1 2026-2027,7,7.1,88,1
-DEMO014,Phạm Bảo Ngọc,CNTT02,demo014@example.test,ML101,Học máy ứng dụng,2026A,Học kỳ 1 2026-2027,8,5.8,76,3
-DEMO015,Vũ Quang Hưng,CNTT03,demo015@example.test,PY101,Lập trình Python,2026A,Học kỳ 1 2026-2027,9,9.3,97,0
-DEMO016,Đỗ Mai Phương,CNTT01,demo016@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1 2026-2027,10,4.5,69,4
-DEMO017,Bùi Minh Quân,CNTT02,demo017@example.test,WEB101,Lập trình Web,2026A,Học kỳ 1 2026-2027,5,6.5,82,2
-DEMO018,Hoàng Ngọc Ánh,CNTT03,demo018@example.test,NET101,Mạng máy tính,2026A,Học kỳ 1 2026-2027,6,8.7,95,0
-DEMO019,Ngô Thanh Tùng,CNTT01,demo019@example.test,AI101,Trí tuệ nhân tạo,2026A,Học kỳ 1 2026-2027,7,3.5,63,5
-DEMO020,Dương Khả Vy,CNTT02,demo020@example.test,DSA101,Cấu trúc dữ liệu và giải thuật,2026A,Học kỳ 1 2026-2027,8,7.6,89,1
-DEMO021,Nguyễn Thái Sơn,CNTT03,demo021@example.test,ML101,Học máy ứng dụng,2026A,Học kỳ 1 2026-2027,9,5.0,74,3
-DEMO022,Trần Ngân Hà,CNTT01,demo022@example.test,PY101,Lập trình Python,2026A,Học kỳ 1 2026-2027,10,8.5,93,0
-DEMO023,Lê Đức Mạnh,CNTT02,demo023@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1 2026-2027,5,4.1,67,4
-DEMO024,Phạm Hồng Nhung,CNTT03,demo024@example.test,WEB101,Lập trình Web,2026A,Học kỳ 1 2026-2027,6,6.8,85,2
-DEMO025,Vũ Thành Đạt,CNTT01,demo025@example.test,NET101,Mạng máy tính,2026A,Học kỳ 1 2026-2027,7,9.0,98,0
-DEMO026,Đỗ Bích Liên,CNTT02,demo026@example.test,AI101,Trí tuệ nhân tạo,2026A,Học kỳ 1 2026-2027,8,3.2,59,6
-DEMO027,Bùi Hữu Phúc,CNTT03,demo027@example.test,DSA101,Cấu trúc dữ liệu và giải thuật,2026A,Học kỳ 1 2026-2027,9,7.3,87,1
-DEMO028,Hoàng Tâm An,CNTT01,demo028@example.test,ML101,Học máy ứng dụng,2026A,Học kỳ 1 2026-2027,10,5.6,77,3
-DEMO029,Ngô Quốc Việt,CNTT02,demo029@example.test,PY101,Lập trình Python,2026A,Học kỳ 1 2026-2027,5,8.1,91,0
-DEMO030,Dương Mai Chi,CNTT03,demo030@example.test,DB101,Cơ sở dữ liệu,2026A,Học kỳ 1 2026-2027,6,4.4,65,5
+﻿student_code,full_name,class_name,email,course_code,course_name,semester_code,semester_name,current_week,score,attendance_rate,late_submissions
+DEMO001,Nguyễn Minh Anh,CNTT 17-01,demo001@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,1,4.9,10,3
+DEMO002,Trần Minh Anh,CNTT 17-01,demo002@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,2,5.6,9,0
+DEMO003,Lê Minh Anh,CNTT 17-01,demo003@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,3,6.3,8,3
+DEMO004,Phạm Minh Anh,QTKD 17-01,demo004@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,4,7.0,7,0
+DEMO005,Hoàng Minh Anh,QTKD 17-01,demo005@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,5,7.7,6,3
+DEMO006,Vũ Minh Anh,QTKD 17-01,demo006@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,6,8.4,5,0
+DEMO007,Đặng Minh Anh,NNH 17-01,demo007@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,7,9.1,4,3
+DEMO008,Bùi Minh Anh,NNH 17-01,demo008@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,8,4.6,3,0
+DEMO009,Đỗ Minh Anh,NNH 17-01,demo009@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,9,5.3,2,3
+DEMO010,Hồ Minh Anh,CNTT 18-01,demo010@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,10,6.0,1,0
+DEMO011,Ngô Minh Anh,CNTT 18-01,demo011@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,5,6.7,10,3
+DEMO012,Dương Minh Anh,CNTT 18-01,demo012@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,6,7.4,9,0
+DEMO013,Nguyễn Thị Anh,QTKD 18-01,demo013@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,7,8.1,8,3
+DEMO014,Trần Thị Anh,QTKD 18-01,demo014@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,8,8.8,7,0
+DEMO015,Lê Thị Anh,QTKD 18-01,demo015@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,9,4.3,6,3
+DEMO016,Phạm Thị Anh,NNH 18-01,demo016@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,10,5.0,5,0
+DEMO017,Hoàng Thị Anh,NNH 18-01,demo017@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,5,5.7,4,3
+DEMO018,Vũ Thị Anh,NNH 18-01,demo018@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,6,6.4,3,0
+DEMO019,Đặng Thị Anh,CNTT 19-01,demo019@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,7,7.1,2,3
+DEMO020,Bùi Thị Anh,CNTT 19-01,demo020@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,8,7.8,1,0
+DEMO021,Đỗ Thị Anh,QTKD 19-01,demo021@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,9,8.5,10,3
+DEMO022,Hồ Thị Anh,QTKD 19-01,demo022@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,10,9.2,9,0
+DEMO023,Ngô Thị Anh,NNH 19-01,demo023@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,5,4.7,8,3
+DEMO024,Dương Thị Anh,NNH 19-01,demo024@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,6,5.4,7,0
+DEMO025,Nguyễn Quang Anh,CNTT 20-01,demo025@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,7,6.1,6,3
+DEMO026,Trần Quang Anh,CNTT 20-01,demo026@example.invalid,CS101,Cơ sở dữ liệu,HK1-2026,Học kỳ 1 năm học 2026-2027,8,6.8,5,0
+DEMO027,Lê Quang Anh,QTKD 20-01,demo027@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,9,7.5,4,3
+DEMO028,Phạm Quang Anh,QTKD 20-01,demo028@example.invalid,ML201,Học máy ứng dụng,HK1-2026,Học kỳ 1 năm học 2026-2027,10,8.2,3,0
+DEMO029,Hoàng Quang Anh,NNH 20-01,demo029@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,5,8.9,2,3
+DEMO030,Vũ Quang Anh,NNH 20-01,demo030@example.invalid,SK301,Kỹ năng chuyên ngành,HK1-2026,Học kỳ 1 năm học 2026-2027,6,4.4,1,0

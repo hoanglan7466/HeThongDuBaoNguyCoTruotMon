@@ -1,4 +1,4 @@
-import csv, io, json, time, uuid
+import csv, io, json, re, time, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -11,7 +11,41 @@ from .extensions import db
 from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, ModelVersion, Prediction, Recommendation, Semester, Student, SystemSetting, User
 from .services import DEMO_EMAIL_MESSAGE, DEMO_EMAIL_SUBJECT, REQUIRED_COLUMNS, automation_status, delete_enrollments, delete_students, import_rows, model_bundle, predict_enrollment, run_auto_pipeline, send_demo_email, send_email, set_setting, setting_bool, valid_email, validate_csv, smtp_configured
 
+from .services import import_rows_batched
+
 bp=Blueprint("main",__name__)
+
+def _major_from_class(class_name):
+    """Derive a major code, e.g. CNTT 17-12 -> CNTT or CNTT01 -> CNTT."""
+    value=re.sub(r"[-_\s]?\d+$", "", class_name or "").strip()
+    return re.sub(r"\s+K?\d{2}$", "", value, flags=re.IGNORECASE).strip() or value
+
+def _cohort_from_class(class_name):
+    """Derive cohort K17 from a class label such as CNTT 17-12 or CNTT K17-12."""
+    match=re.search(r"(?:\bK\s*|\s)(\d{2})(?:\s*[-_]\s*\d+)?$", class_name or "", re.IGNORECASE)
+    return f"K{match.group(1)}" if match else ""
+
+def _course_filter_options():
+    options=[]
+    for course in Course.query.order_by(Course.code).all():
+        class_names=[value for value, in db.session.query(Student.class_name).join(Enrollment).filter(Enrollment.course_id==course.id).distinct()]
+        options.append({"id":course.id,"code":course.code,"name":course.name,"majors":sorted({_major_from_class(value) for value in class_names}),"cohorts":sorted({_cohort_from_class(value) for value in class_names}),"classes":class_names})
+    return options
+
+def _dashboard_scope():
+    semester_id=request.args.get("semester_id",type=int); course_id=request.args.get("course_id",type=int)
+    major=request.args.get("major","").strip(); cohort=request.args.get("cohort","").strip(); class_name=request.args.get("class_name","").strip()
+    scope=Enrollment.query.join(Student)
+    if semester_id: scope=scope.filter(Enrollment.semester_id==semester_id)
+    if course_id: scope=scope.filter(Enrollment.course_id==course_id)
+    if class_name: scope=scope.filter(Student.class_name==class_name)
+    if major:
+        major_classes=[value for value, in db.session.query(Student.class_name).distinct() if _major_from_class(value)==major]
+        scope=scope.filter(Student.class_name.in_(major_classes) if major_classes else db.false())
+    if cohort:
+        cohort_classes=[value for value, in db.session.query(Student.class_name).distinct() if _cohort_from_class(value)==cohort]
+        scope=scope.filter(Student.class_name.in_(cohort_classes) if cohort_classes else db.false())
+    return scope,semester_id,course_id,major,cohort,class_name
 
 def _preview_path(token):
     folder=Path(current_app.instance_path)/"import_previews"; folder.mkdir(parents=True,exist_ok=True)
@@ -68,10 +102,7 @@ def logout(): logout_user(); return redirect(url_for("main.login"))
 @bp.get("/")
 @login_required
 def dashboard():
-    course_id=request.args.get("course_id",type=int); semester_id=request.args.get("semester_id",type=int)
-    scope=Enrollment.query
-    if course_id: scope=scope.filter(Enrollment.course_id==course_id)
-    if semester_id: scope=scope.filter(Enrollment.semester_id==semester_id)
+    scope,semester_id,course_id,major,cohort,class_name=_dashboard_scope()
     scoped_ids=[row[0] for row in scope.with_entities(Enrollment.id).all()]
     total=scope.with_entities(Enrollment.student_id).distinct().count(); latest={}
     predictions=Prediction.query.filter(Prediction.enrollment_id.in_(scoped_ids)) if scoped_ids else Prediction.query.filter(db.false())
@@ -102,22 +133,35 @@ def dashboard():
     except (FileNotFoundError, ValueError): pass
     is_demo=Student.query.filter_by(is_demo=True).count()>0
     alerts_query=Alert.query.join(Enrollment).filter(Enrollment.id.in_(scoped_ids)) if scoped_ids else Alert.query.filter(db.false())
-    return render_template("dashboard.html",total=total,counts=counts,attention=attention,alerts=alerts_query.options(joinedload(Alert.enrollment).joinedload(Enrollment.student),joinedload(Alert.enrollment).joinedload(Enrollment.course)).order_by(Alert.created_at.desc()).limit(5).all(),is_demo=is_demo,semester=semester,weekly=weekly,attendance_by_course=attendance_by_course,activities=activities,active_model=active_model,model_ready=model_ready,email_status="ĐÃ CẤU HÌNH" if smtp_configured() else "DEV MODE",courses=Course.query.order_by(Course.code).all(),semesters=Semester.query.order_by(Semester.code.desc()).all(),course_id=course_id,semester_id=semester_id)
+    classes=[value for value, in db.session.query(Student.class_name).distinct().order_by(Student.class_name)]
+    majors=sorted({_major_from_class(value) for value in classes if _major_from_class(value)})
+    cohorts=sorted({_cohort_from_class(value) for value in classes if _cohort_from_class(value)},reverse=True)
+    class_options=[{"name":value,"major":_major_from_class(value),"cohort":_cohort_from_class(value)} for value in classes]
+    return render_template("dashboard.html",total=total,counts=counts,attention=attention,alerts=alerts_query.options(joinedload(Alert.enrollment).joinedload(Enrollment.student),joinedload(Alert.enrollment).joinedload(Enrollment.course)).order_by(Alert.created_at.desc()).limit(5).all(),is_demo=is_demo,semester=semester,weekly=weekly,attendance_by_course=attendance_by_course,activities=activities,active_model=active_model,model_ready=model_ready,email_status="ĐÃ CẤU HÌNH" if smtp_configured() else "DEV MODE",courses=_course_filter_options(),semesters=Semester.query.order_by(Semester.code.desc()).all(),classes=class_options,majors=majors,cohorts=cohorts,course_id=course_id,semester_id=semester_id,major=major,cohort=cohort,class_name=class_name)
 
 @bp.get("/students")
 @login_required
 def students():
-    q=Student.query; term=request.args.get("q","").strip(); class_name=request.args.get("class_name","").strip(); course_id=request.args.get("course_id",type=int); semester_id=request.args.get("semester_id",type=int); sort=request.args.get("sort","code")
+    q=Student.query; term=request.args.get("q","").strip(); class_name=request.args.get("class_name","").strip(); major=request.args.get("major","").strip(); cohort=request.args.get("cohort","").strip(); course_id=request.args.get("course_id",type=int); semester_id=request.args.get("semester_id",type=int); sort=request.args.get("sort","code")
     if term: q=q.filter(db.or_(Student.student_code.contains(term),Student.full_name.contains(term)))
     if class_name: q=q.filter(Student.class_name==class_name)
+    if major:
+        major_classes=[value for value, in db.session.query(Student.class_name).distinct() if _major_from_class(value)==major]
+        q=q.filter(Student.class_name.in_(major_classes) if major_classes else db.false())
+    if cohort:
+        cohort_classes=[value for value, in db.session.query(Student.class_name).distinct() if _cohort_from_class(value)==cohort]
+        q=q.filter(Student.class_name.in_(cohort_classes) if cohort_classes else db.false())
     if course_id or semester_id:
         q=q.join(Enrollment)
         if course_id: q=q.filter(Enrollment.course_id==course_id)
         if semester_id: q=q.filter(Enrollment.semester_id==semester_id)
     order={"name":Student.full_name,"class":Student.class_name}.get(sort,Student.student_code)
     page=q.distinct().order_by(order).paginate(page=request.args.get("page",1,type=int),per_page=15,error_out=False)
-    classes=[r[0] for r in db.session.query(Student.class_name).distinct().order_by(Student.class_name)]
-    return render_template("students.html",page=page,total_students=Student.query.count(),term=term,class_name=class_name,course_id=course_id,semester_id=semester_id,sort=sort,classes=classes,courses=Course.query.order_by(Course.code).all(),semesters=Semester.query.order_by(Semester.code.desc()).all())
+    class_names=[r[0] for r in db.session.query(Student.class_name).distinct().order_by(Student.class_name)]
+    classes=[{"name":value,"major":_major_from_class(value),"cohort":_cohort_from_class(value)} for value in class_names]
+    majors=sorted({item["major"] for item in classes if item["major"]})
+    cohorts=sorted({item["cohort"] for item in classes if item["cohort"]},reverse=True)
+    return render_template("students.html",page=page,total_students=Student.query.count(),term=term,class_name=class_name,major=major,cohort=cohort,course_id=course_id,semester_id=semester_id,sort=sort,classes=classes,majors=majors,cohorts=cohorts,courses=_course_filter_options(),semesters=Semester.query.order_by(Semester.code.desc()).all())
 
 @bp.get("/academic-data")
 @login_required
@@ -130,19 +174,27 @@ def academic_data():
 def analysis():
     semesters=Semester.query.order_by(Semester.is_current.desc(),Semester.code.desc()).all()
     semester_id=request.args.get("semester_id",type=int) or (semesters[0].id if semesters else None)
-    course_query=Course.query.join(Enrollment)
-    if semester_id: course_query=course_query.filter(Enrollment.semester_id==semester_id)
+    major=request.args.get("major","").strip(); cohort=request.args.get("cohort","").strip(); class_name=request.args.get("class_name","").strip()
+    scope=Enrollment.query.join(Student)
+    if semester_id: scope=scope.filter(Enrollment.semester_id==semester_id)
+    if class_name: scope=scope.filter(Student.class_name==class_name)
+    if major:
+        major_classes=[value for value, in db.session.query(Student.class_name).distinct() if _major_from_class(value)==major]
+        scope=scope.filter(Student.class_name.in_(major_classes) if major_classes else db.false())
+    if cohort:
+        cohort_classes=[value for value, in db.session.query(Student.class_name).distinct() if _cohort_from_class(value)==cohort]
+        scope=scope.filter(Student.class_name.in_(cohort_classes) if cohort_classes else db.false())
+    scoped_ids=[row[0] for row in scope.with_entities(Enrollment.id).all()]
+    course_query=Course.query.join(Enrollment).filter(Enrollment.id.in_(scoped_ids)) if scoped_ids else Course.query.filter(db.false())
     courses=course_query.distinct().order_by(Course.code).all()
     course_id=request.args.get("course_id",type=int) or (courses[0].id if courses else None)
-    available_weeks_query=db.session.query(Enrollment.current_week)
-    if semester_id: available_weeks_query=available_weeks_query.filter(Enrollment.semester_id==semester_id)
+    available_weeks_query=db.session.query(Enrollment.current_week).filter(Enrollment.id.in_(scoped_ids)) if scoped_ids else db.session.query(Enrollment.current_week).filter(db.false())
     if course_id: available_weeks_query=available_weeks_query.filter(Enrollment.course_id==course_id)
     available_weeks=sorted({row[0] for row in available_weeks_query.all()})
     week=request.args.get("week",type=int)
     if week is None: week=max(available_weeks,default=None)
     term=request.args.get("q","").strip()
-    query=Enrollment.query.options(joinedload(Enrollment.student),joinedload(Enrollment.course),joinedload(Enrollment.semester),selectinload(Enrollment.predictions))
-    if semester_id: query=query.filter(Enrollment.semester_id==semester_id)
+    query=scope.options(joinedload(Enrollment.student),joinedload(Enrollment.course),joinedload(Enrollment.semester),selectinload(Enrollment.predictions))
     if course_id: query=query.filter(Enrollment.course_id==course_id)
     if week is not None: query=query.filter(Enrollment.current_week==week)
     if term: query=query.join(Student).filter(db.or_(Student.student_code.contains(term),Student.full_name.contains(term)))
@@ -153,7 +205,12 @@ def analysis():
         rows.append({"enrollment":enrollment,"prediction":latest})
     rank={"CAO":0,"TRUNG_BINH":1,"ON_DINH":2}
     rows.sort(key=lambda row:(rank.get(row["prediction"].risk_level,3) if row["prediction"] else 3,-(row["prediction"].probability if row["prediction"] else -1),row["enrollment"].student.student_code))
-    return render_template("analysis.html",rows=rows,counts=counts,total=len({e.student_id for e in enrollments}),has_data=Enrollment.query.count()>0,semesters=semesters,courses=courses,available_weeks=available_weeks,semester_id=semester_id,course_id=course_id,week=week,term=term)
+    class_names=[value for value, in db.session.query(Student.class_name).distinct().order_by(Student.class_name)]
+    classes=[{"name":value,"major":_major_from_class(value),"cohort":_cohort_from_class(value)} for value in class_names]
+    majors=sorted({item["major"] for item in classes if item["major"]})
+    cohorts=sorted({item["cohort"] for item in classes if item["cohort"]},reverse=True)
+    course_options=[{"id":course.id,"code":course.code,"name":course.name,"majors":sorted({_major_from_class(value) for value, in db.session.query(Student.class_name).join(Enrollment).filter(Enrollment.course_id==course.id).distinct()}),"cohorts":sorted({_cohort_from_class(value) for value, in db.session.query(Student.class_name).join(Enrollment).filter(Enrollment.course_id==course.id).distinct()})} for course in courses]
+    return render_template("analysis.html",rows=rows,counts=counts,total=len({e.student_id for e in enrollments}),has_data=Enrollment.query.count()>0,semesters=semesters,courses=course_options,available_weeks=available_weeks,semester_id=semester_id,course_id=course_id,week=week,term=term,classes=classes,majors=majors,cohorts=cohorts,major=major,cohort=cohort,class_name=class_name)
 
 @bp.get("/students/<int:student_id>")
 @login_required
@@ -178,12 +235,21 @@ def predict(enrollment_id):
 @login_required
 def predict_batch():
     semester_id=request.form.get("semester_id",type=int); course_id=request.form.get("course_id",type=int); week=request.form.get("week",type=int)
-    redirect_args={"semester_id":semester_id,"course_id":course_id,"week":week}
+    major=request.form.get("major","").strip(); cohort=request.form.get("cohort","").strip(); class_name=request.form.get("class_name","").strip()
+    redirect_args={"semester_id":semester_id,"course_id":course_id,"week":week,"major":major,"cohort":cohort,"class_name":class_name}
     if not semester_id or not course_id or week is None:
         flash("Vui lòng chọn học kỳ, môn học và tuần.","error"); return redirect(url_for("main.analysis",**redirect_args))
     if week<5:
         flash("Chưa đủ dữ liệu để dự báo. Hệ thống bắt đầu dự báo nguy cơ từ tuần 5.","error"); return redirect(url_for("main.analysis",**redirect_args))
-    enrollments=Enrollment.query.filter_by(semester_id=semester_id,course_id=course_id,current_week=week).all()
+    enrollment_query=Enrollment.query.join(Student).filter(Enrollment.semester_id==semester_id,Enrollment.course_id==course_id,Enrollment.current_week==week)
+    if class_name: enrollment_query=enrollment_query.filter(Student.class_name==class_name)
+    if major:
+        major_classes=[value for value, in db.session.query(Student.class_name).distinct() if _major_from_class(value)==major]
+        enrollment_query=enrollment_query.filter(Student.class_name.in_(major_classes) if major_classes else db.false())
+    if cohort:
+        cohort_classes=[value for value, in db.session.query(Student.class_name).distinct() if _cohort_from_class(value)==cohort]
+        enrollment_query=enrollment_query.filter(Student.class_name.in_(cohort_classes) if cohort_classes else db.false())
+    enrollments=enrollment_query.all()
     if not enrollments:
         flash("Chưa có dữ liệu để dự báo cho bộ lọc này.","error"); return redirect(url_for("main.analysis",**redirect_args))
     done=skipped=0
@@ -221,7 +287,7 @@ def import_confirm():
     if not payload: flash("Phiên xem trước đã hết hạn.","error")
     else:
         try:
-            count,batch=import_rows(payload["rows"],filename=payload["filename"],imported_by=current_user.id)
+            count,batch=import_rows_batched(payload["rows"],filename=payload["filename"],imported_by=current_user.id)
             db.session.add(AuditLog(user_id=current_user.id,action="IMPORT_DATA",target=batch.batch_id)); db.session.commit()
             run_auto_pipeline([e.id for e in batch.enrollments])
             flash(f"Đã nhập {count} bản ghi (batch {batch.batch_id[:8]}).","success")
@@ -242,7 +308,7 @@ def seed_demo():
         demo_file=Path(current_app.root_path).parent/"demo_data"/"du_lieu_sinh_vien_demo.csv"
         rows,errors=validate_csv(demo_file.open("rb"))
         if errors: flash("Tệp dữ liệu DEMO không hợp lệ.","error"); return redirect(url_for("main.import_data"))
-        _,batch=import_rows(rows,is_demo=True,filename=demo_file.name,imported_by=current_user.id)
+        _,batch=import_rows_batched(rows,is_demo=True,filename=demo_file.name,imported_by=current_user.id)
         db.session.add(AuditLog(user_id=current_user.id,action="LOAD_DEMO",target=batch.batch_id)); db.session.commit()
         predicted=0
         try:
@@ -377,17 +443,28 @@ def _report_query():
     term=request.args.get("q","").strip()
     course_id=request.args.get("course_id",type=int)
     semester_id=request.args.get("semester_id",type=int)
+    major=request.args.get("major","").strip(); cohort=request.args.get("cohort","").strip(); class_name=request.args.get("class_name","").strip()
     if level in {"CAO","TRUNG_BINH","ON_DINH"}: query=query.filter(Prediction.risk_level==level)
     if term: query=query.filter(db.or_(Student.student_code.contains(term),Student.full_name.contains(term)))
     if course_id: query=query.filter(Enrollment.course_id==course_id)
     if semester_id: query=query.filter(Enrollment.semester_id==semester_id)
-    return query.order_by(Prediction.created_at.desc()),level,term,course_id,semester_id
+    if class_name: query=query.filter(Student.class_name==class_name)
+    if cohort:
+        cohort_classes=[value for value, in db.session.query(Student.class_name).distinct() if _cohort_from_class(value)==cohort]
+        query=query.filter(Student.class_name.in_(cohort_classes) if cohort_classes else db.false())
+    if major:
+        major_classes=[value for value, in db.session.query(Student.class_name).distinct() if _major_from_class(value)==major]
+        query=query.filter(Student.class_name.in_(major_classes) if major_classes else db.false())
+    return query.order_by(Prediction.created_at.desc()),level,term,course_id,semester_id,major,cohort,class_name
 
 @bp.get("/reports")
 @login_required
 def reports():
-    query,level,term,course_id,semester_id=_report_query()
-    return render_template("reports.html",predictions=query.all(),risk=level,term=term,course_id=course_id,semester_id=semester_id,courses=Course.query.order_by(Course.code).all(),semesters=Semester.query.order_by(Semester.code.desc()).all())
+    query,level,term,course_id,semester_id,major,cohort,class_name=_report_query()
+    class_names=[value for value, in db.session.query(Student.class_name).distinct().order_by(Student.class_name)]
+    classes=[{"name":value,"cohort":_cohort_from_class(value)} for value in class_names]
+    cohorts=sorted({_cohort_from_class(value) for value in class_names if _cohort_from_class(value)},reverse=True)
+    return render_template("reports.html",predictions=query.all(),risk=level,term=term,course_id=course_id,semester_id=semester_id,major=major,cohort=cohort,class_name=class_name,classes=classes,cohorts=cohorts,courses=Course.query.order_by(Course.code).all(),semesters=Semester.query.order_by(Semester.code.desc()).all())
 
 @bp.get("/reports/export.csv")
 @login_required
@@ -497,10 +574,7 @@ def demo_email():
 @bp.get("/api/dashboard")
 @login_required
 def dashboard_api():
-    course_id=request.args.get("course_id",type=int); semester_id=request.args.get("semester_id",type=int)
-    scope=Enrollment.query
-    if course_id: scope=scope.filter(Enrollment.course_id==course_id)
-    if semester_id: scope=scope.filter(Enrollment.semester_id==semester_id)
+    scope,_,_,_,_,_=_dashboard_scope()
     ids=[row[0] for row in scope.with_entities(Enrollment.id).all()]
     latest={}
     predictions=Prediction.query.filter(Prediction.enrollment_id.in_(ids) if ids else db.false()).options(joinedload(Prediction.enrollment).joinedload(Enrollment.student),joinedload(Prediction.enrollment).joinedload(Enrollment.course)).order_by(Prediction.enrollment_id,Prediction.created_at.desc(),Prediction.id.desc()).all()
