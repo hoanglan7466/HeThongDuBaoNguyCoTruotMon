@@ -1,11 +1,70 @@
 <!doctype html>
-<html lang="vi"><body style="margin:0;background:#f5f7fb;color:#17233c;font-family:Arial,sans-serif;line-height:1.5">
-<div style="max-width:600px;margin:24px auto;background:#fff;border-radius:12px;overflow:hidden">
-  <header style="background:#f97316;color:#fff;padding:24px"><strong>HỆ THỐNG PHÂN TÍCH KẾT QUẢ HỌC TẬP</strong><br>ĐẠI HỌC ĐẠI NAM</header>
-  <main style="padding:24px"><p>Xin chào {{ student.full_name }},</p><p>Hệ thống ghi nhận kết quả phân tích học tập của bạn:</p>
-    <table style="width:100%;border-collapse:collapse"><tr><td>Môn học</td><td><strong>{{ enrollment.course.name }}</strong></td></tr><tr><td>Tuần</td><td>{{ enrollment.current_week }}</td></tr><tr><td>Mức nguy cơ</td><td><strong style="color:{% if prediction.risk_level=='CAO' %}#dc2626{% elif prediction.risk_level=='TRUNG_BINH' %}#d97706{% else %}#16a34a{% endif %}">{{ prediction.risk_level|risk_label }}</strong></td></tr><tr><td>Xác suất</td><td>{{ '%.1f'|format(prediction.probability * 100) }}%</td></tr></table>
-    <h3>Các chỉ số liên quan</h3><p>Điểm: {{ '%.1f'|format(enrollment.score) }}/10 · Điểm chuyên cần: {{ '%.0f'|format(enrollment.attendance_rate) }}/10 · Nộp trễ: {{ enrollment.late_submissions }} lần</p>
-    <h3>Gợi ý học tập</h3><ul>{% for item in recommendations %}<li>{{ item.content }}</li>{% endfor %}</ul>
-    <p>Đây là cảnh báo hỗ trợ học tập. Kết quả dự báo chỉ mang tính hỗ trợ và không thay thế đánh giá của giảng viên/cố vấn học tập.</p>
-  </main><footer style="padding:16px 24px;background:#f8fafc;color:#64748b">Trân trọng,<br>Hệ thống phân tích kết quả học tập và dự báo nguy cơ trượt môn<br>Đại học Đại Nam</footer>
-</div></body></html>
+<html lang="vi">
+<body style="margin:0;padding:0;background-color:#f3f5f9;color:#14213d;font-family:Arial,Helvetica,sans-serif;">
+  {% if prediction.risk_level == 'CAO' %}{% set risk_color='#dc2626' %}{% set risk_soft='#fff1f2' %}{% set risk_border='#fecdd3' %}{% set risk_label='Nguy cơ cao' %}{% set risk_message='Hệ thống phát hiện một số chỉ số cần được ưu tiên hỗ trợ kịp thời.' %}
+  {% elif prediction.risk_level == 'TRUNG_BINH' %}{% set risk_color='#ea580c' %}{% set risk_soft='#fff7ed' %}{% set risk_border='#fed7aa' %}{% set risk_label='Cần theo dõi' %}{% set risk_message='Hệ thống ghi nhận một số chỉ số học tập cần được lưu ý và hỗ trợ kịp thời.' %}
+  {% else %}{% set risk_color='#15803d' %}{% set risk_soft='#f0fdf4' %}{% set risk_border='#bbf7d0' %}{% set risk_label='Ổn định' %}{% set risk_message='Các chỉ số hiện tại đang ổn định; hãy tiếp tục duy trì nhịp học và theo dõi thường xuyên.' %}{% endif %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#f3f5f9;">
+    <tr><td align="center" style="padding:32px 14px;">
+      <table role="presentation" width="680" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:680px;background-color:#ffffff;border-radius:14px;overflow:hidden;">
+        <tr><td style="padding:34px 36px;background-color:#f26a21;color:#ffffff;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+            <td valign="middle" style="font-size:22px;font-weight:700;line-height:1.2;letter-spacing:.2px;">ĐẠI HỌC ĐẠI NAM<br><span style="font-size:14px;font-weight:400;line-height:1.6;">Hệ thống cảnh báo học tập</span></td>
+            <td align="right" valign="middle" style="font-size:13px;font-style:italic;line-height:1.55;color:#fff7ed;">Học để thay đổi<br>vì một tương lai tốt đẹp hơn</td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="padding:34px 28px 10px;">
+          <p style="margin:0 0 3px;font-size:16px;font-weight:700;color:#1f3b68;">Xin chào</p>
+          <p style="margin:0 0 12px;font-size:26px;line-height:1.2;font-weight:700;color:#f05d18;">{{ student.full_name }},</p>
+          <p style="margin:0;font-size:14px;line-height:1.6;color:#29466f;">Hệ thống đã phân tích kết quả học tập hiện tại của bạn và phát hiện một số chỉ số cần được lưu ý. Vui lòng xem chi tiết bên dưới để kịp thời điều chỉnh kế hoạch học tập.</p>
+        </td></tr>
+        <tr><td style="padding:22px 28px 0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:{{ risk_soft }};border:1px solid {{ risk_border }};border-radius:12px;"><tr>
+            <td width="52%" style="padding:22px;border-right:1px solid {{ risk_border }};">
+              <p style="margin:0 0 4px;font-size:14px;font-weight:700;color:#243b63;">Mức nguy cơ tổng quan</p>
+              <p style="margin:0 0 6px;font-size:24px;line-height:1.2;font-weight:700;color:{{ risk_color }};">{{ risk_label }}</p>
+              <p style="margin:0;font-size:14px;color:#243b63;">Xác suất dự báo: <strong>{{ '%.1f'|format(prediction.probability * 100) }}%</strong></p>
+            </td>
+            <td width="48%" valign="middle" style="padding:22px;font-size:14px;line-height:1.55;color:#29466f;">{{ risk_message }}</td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="padding:20px 28px 0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #fed7aa;border-radius:12px;overflow:hidden;">
+            <tr><td colspan="2" style="padding:16px 20px;background-color:#fff7ed;font-size:16px;font-weight:700;color:#ea580c;">Thông tin môn học</td></tr>
+            <tr>
+              <td width="52%" valign="top" style="padding:12px 20px 16px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:14px;line-height:1.5;color:#29466f;">
+                  <tr><td style="padding:11px 0;border-bottom:1px solid #eef1f5;">Môn học</td><td align="right" style="padding:11px 0;border-bottom:1px solid #eef1f5;font-weight:700;color:#14213d;">{{ enrollment.course.name }}</td></tr>
+                  <tr><td style="padding:11px 0;border-bottom:1px solid #eef1f5;">Tuần phân tích</td><td align="right" style="padding:11px 0;border-bottom:1px solid #eef1f5;font-weight:700;color:#14213d;">Tuần {{ enrollment.current_week }}</td></tr>
+                  <tr><td style="padding:11px 0;border-bottom:1px solid #eef1f5;">Mức nguy cơ</td><td align="right" style="padding:11px 0;border-bottom:1px solid #eef1f5;"><span style="display:inline-block;padding:4px 8px;border-radius:5px;background-color:{{ risk_soft }};color:{{ risk_color }};font-weight:700;">{{ risk_label }}</span></td></tr>
+                  <tr><td style="padding:11px 0 0;">Xác suất dự báo</td><td align="right" style="padding:11px 0 0;font-weight:700;color:#14213d;">{{ '%.1f'|format(prediction.probability * 100) }}%</td></tr>
+                </table>
+              </td>
+              <td width="48%" valign="top" style="padding:16px 16px 16px 0;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#eff6ff;border-radius:10px;"><tr><td style="padding:17px;">
+                  <p style="margin:0 0 11px;font-size:16px;font-weight:700;color:#1d4f91;">Một số chỉ số học tập</p>
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:13px;color:#29466f;">
+                    <tr><td style="padding:8px 0;">Điểm hiện tại</td><td align="right" style="padding:8px 0;"><span style="display:inline-block;min-width:38px;padding:4px 7px;border-radius:6px;background-color:#ffedd5;color:#ea580c;font-weight:700;text-align:center;">{{ '%.1f'|format(enrollment.score) }}</span></td></tr>
+                    <tr><td style="padding:8px 0;">Chuyên cần</td><td align="right" style="padding:8px 0;"><span style="display:inline-block;padding:4px 7px;border-radius:6px;background-color:#dbeafe;color:#1d4ed8;font-weight:700;">{{ '%.1f'|format(enrollment.attendance_rate) }}/10</span></td></tr>
+                    <tr><td style="padding:8px 0;">Số lần nộp bài trễ</td><td align="right" style="padding:8px 0;"><span style="display:inline-block;min-width:24px;padding:4px 7px;border-radius:6px;background-color:#fee2e2;color:#dc2626;font-weight:700;text-align:center;">{{ enrollment.late_submissions }}</span></td></tr>
+                  </table>
+                </td></tr></table>
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:20px 28px 0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;"><tr><td style="padding:20px 22px;">
+            <p style="margin:0 0 12px;font-size:16px;font-weight:700;color:#15803d;">Gợi ý cải thiện</p>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:14px;line-height:1.6;color:#29466f;">{% for item in recommendations %}<tr><td valign="top" style="width:20px;padding:5px 7px 5px 0;color:#15803d;font-weight:700;">✓</td><td style="padding:5px 0;">{{ item.content }}</td></tr>{% endfor %}</table>
+          </td></tr></table>
+        </td></tr>
+        <tr><td style="padding:16px 28px 0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#eff6ff;border-radius:10px;"><tr><td style="padding:16px 20px;font-size:13px;line-height:1.5;color:#1d4f91;">Đây là cảnh báo hỗ trợ học tập được tạo từ hệ thống phân tích dữ liệu. Kết quả dự báo mang tính hỗ trợ và không thay thế đánh giá của giảng viên hoặc cố vấn học tập.</td></tr></table>
+        </td></tr>
+        <tr><td style="padding:22px 32px 30px;border-top:1px solid #eef1f5;font-size:13px;line-height:1.55;color:#405b82;">Trân trọng,<br><strong>Hệ thống cảnh báo học tập</strong><br>Trường Đại học Đại Nam</td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

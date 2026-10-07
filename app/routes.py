@@ -9,7 +9,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from werkzeug.utils import secure_filename
 from .extensions import db
 from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, Major, ModelVersion, Prediction, Recommendation, Semester, Student, SystemSetting, User
-from .services import DEMO_EMAIL_MESSAGE, DEMO_EMAIL_SUBJECT, REQUIRED_COLUMNS, automation_status, delete_enrollments, delete_students, import_rows, model_bundle, predict_enrollment, run_auto_pipeline, send_demo_email, send_email, set_setting, setting_bool, valid_email, validate_csv, smtp_configured
+from .services import REQUIRED_COLUMNS, automation_status, delete_enrollments, delete_students, import_rows, model_bundle, predict_enrollment, render_demo_risk_alert_email, run_auto_pipeline, send_demo_email, send_email, set_setting, setting_bool, valid_email, validate_csv, smtp_configured
 
 from .services import import_rows_batched
 
@@ -576,7 +576,14 @@ def settings():
     bundle=None
     try: bundle=model_bundle()
     except (FileNotFoundError,ValueError): pass
-    return render_template("settings.html",database=current_app.config["SQLALCHEMY_DATABASE_URI"].split(":",1)[0],smtp="Đã cấu hình SMTP" if smtp_configured() else "DEV preview",model_ready=bundle is not None,automation=automation_status(),demo_subject=DEMO_EMAIL_SUBJECT,demo_message=DEMO_EMAIL_MESSAGE)
+    return render_template("settings.html",database=current_app.config["SQLALCHEMY_DATABASE_URI"].split(":",1)[0],smtp="Đã cấu hình SMTP" if smtp_configured() else "DEV preview",model_ready=bundle is not None,automation=automation_status())
+
+@bp.get("/settings/email-preview")
+@admin_required
+def email_preview():
+    """Render the same academic-warning HTML as delivery with safe DEMO data."""
+    _,html=render_demo_risk_alert_email()
+    return html
 
 @bp.post("/settings/automation")
 @admin_required
@@ -601,16 +608,12 @@ def test_email():
 @admin_required
 def demo_email():
     recipient=request.form.get("recipient","").strip()
-    subject=request.form.get("subject","").strip()
-    message=request.form.get("message","")
     if not smtp_configured(): return jsonify(ok=False,message="SMTP chưa được cấu hình."),400
     if not valid_email(recipient): return jsonify(ok=False,message="Email người nhận không hợp lệ."),400
-    if not subject or len(subject)>180 or "\r" in subject or "\n" in subject: return jsonify(ok=False,message="Tiêu đề không hợp lệ."),400
-    if not message.strip() or len(message)>5000: return jsonify(ok=False,message="Nội dung không hợp lệ (1–5000 ký tự)."),400
     now=time.time(); last=session.get("demo_email_last",0)
     if now-last<5: return jsonify(ok=False,message="Vui lòng chờ vài giây trước khi gửi lại."),429
     session["demo_email_last"]=now
-    status=send_demo_email(recipient,subject,message)
+    status=send_demo_email(recipient)
     if status not in {"SENT","DEV_PREVIEW"}: return jsonify(ok=False,message="Gửi email thất bại.",status=status),502
     return jsonify(ok=True,message="Đã gửi thông báo demo thành công.",status=status)
 

@@ -3,7 +3,7 @@ from sklearn.ensemble import RandomForestClassifier
 from app.extensions import db
 from app.cli import _upgrade_schema
 from app.models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, Major, Prediction, Recommendation, Semester, Student, User
-from app.services import FEATURES, import_rows, predict_enrollment, risk_level, validate_csv
+from app.services import FEATURES, import_rows, predict_enrollment, render_risk_alert_email, risk_level, run_auto_pipeline, set_setting, validate_csv
 
 def test_health(client):
     r=client.get("/health"); assert r.status_code==200 and r.json["database"]=="ok"
@@ -93,6 +93,96 @@ def test_prediction_allows_week_six(app, tmp_path):
         s=Student(student_code="WEEK6",full_name="Week Six",class_name="C1"); c=Course(code="W6",name="Môn tuần 6"); sem=Semester(code="W6",name="Học kỳ")
         db.session.add_all([s,c,sem]); db.session.flush(); enrollment=Enrollment(student=s,course=c,semester=sem,current_week=6,score=2,attendance_rate=5,late_submissions=5); db.session.add(enrollment); db.session.commit()
         assert predict_enrollment(enrollment).week_number==6
+
+def _configure_high_risk_model(app):
+    import pandas as pd
+    model=RandomForestClassifier(n_estimators=10,random_state=42).fit(pd.DataFrame([[2,5,5],[9,10,0]],columns=FEATURES),[1,0])
+    joblib.dump({"model":model,"metadata":{"version":"auto-email-v1","features":FEATURES}},app.config["MODEL_PATH"])
+
+def _add_high_risk_enrollment(email):
+    suffix=Student.query.count()+1
+    student=Student(student_code=f"AUTO{suffix}",full_name="Auto Test",class_name="C1",email=email)
+    course=Course(code=f"AUTO{suffix}",name="Cơ sở dữ liệu")
+    semester=Semester(code=f"AUTO{suffix}",name="Học kỳ")
+    db.session.add_all([student,course,semester]); db.session.flush()
+    enrollment=Enrollment(student=student,course=course,semester=semester,current_week=5,score=2,attendance_rate=5,late_submissions=5)
+    db.session.add(enrollment); db.session.commit()
+    return enrollment
+
+def test_auto_pipeline_sends_once_uses_new_template_and_skips_rerun(app, monkeypatch):
+    import smtplib
+    from email import policy
+    from email.parser import BytesParser
+    captured=[]
+    class FakeSMTP:
+        def __init__(self,*args,**kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self,*args): return False
+        def starttls(self): pass
+        def login(self,*args): pass
+        def send_message(self,message): captured.append(message.as_bytes())
+    with app.app_context():
+        _configure_high_risk_model(app); app.config.update(MAIL_MODE='smtp',SMTP_HOST='smtp.example.com',SMTP_USERNAME='test@example.com',SMTP_PASSWORD='secret',SMTP_FROM='test@example.com')
+        set_setting('auto_prediction_enabled','1'); set_setting('auto_email_enabled','1')
+        enrollment=_add_high_risk_enrollment('auto@example.com')
+        monkeypatch.setattr(smtplib,'SMTP',FakeSMTP)
+        assert run_auto_pipeline([enrollment.id])['predictions']==1
+        assert len(captured)==1 and EmailLog.query.filter_by(status='SENT').count()==1
+        html=BytesParser(policy=policy.default).parsebytes(captured[0]).get_body(preferencelist=('html',)).get_content()
+        for marker in ('Mức nguy cơ tổng quan','Thông tin môn học','Một số chỉ số học tập','Gợi ý cải thiện','Cơ sở dữ liệu'):
+            assert marker in html
+        assert run_auto_pipeline([enrollment.id])['predictions']==1 and len(captured)==1
+        assert Enrollment.query.filter(~Enrollment.predictions.any()).count()==0
+
+def test_manual_batch_prediction_does_not_send_email(app, auth, monkeypatch):
+    import smtplib
+    captured=[]
+    class FakeSMTP:
+        def __init__(self,*args,**kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self,*args): return False
+        def starttls(self): pass
+        def login(self,*args): pass
+        def send_message(self,message): captured.append(message)
+    with app.app_context():
+        _configure_high_risk_model(app); app.config.update(MAIL_MODE='smtp',SMTP_HOST='smtp.example.com',SMTP_USERNAME='test@example.com',SMTP_PASSWORD='secret',SMTP_FROM='test@example.com')
+        set_setting('auto_email_enabled','1'); enrollment=_add_high_risk_enrollment('manual@example.com')
+        semester_id,course_id=enrollment.semester_id,enrollment.course_id
+    monkeypatch.setattr(smtplib,'SMTP',FakeSMTP)
+    response=auth.post('/predict/batch',data={'semester_id':semester_id,'course_id':course_id,'week':5},follow_redirects=True)
+    assert response.status_code==200 and not captured
+    with app.app_context(): assert Prediction.query.count()==1 and Alert.query.count()==1
+
+def test_auto_pipeline_respects_email_disabled_and_missing_recipient(app, monkeypatch):
+    import smtplib
+    captured=[]
+    class FakeSMTP:
+        def __init__(self,*args,**kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self,*args): return False
+        def starttls(self): pass
+        def login(self,*args): pass
+        def send_message(self,message): captured.append(message)
+    with app.app_context():
+        _configure_high_risk_model(app); app.config.update(MAIL_MODE='smtp',SMTP_HOST='smtp.example.com',SMTP_USERNAME='test@example.com',SMTP_PASSWORD='secret',SMTP_FROM='test@example.com')
+        monkeypatch.setattr(smtplib,'SMTP',FakeSMTP)
+        set_setting('auto_prediction_enabled','1'); set_setting('auto_email_enabled','0')
+        disabled=_add_high_risk_enrollment('disabled@example.com'); run_auto_pipeline([disabled.id])
+        assert not captured and EmailLog.query.filter_by(subject='AUTO_EMAIL_DISABLED',status='SKIPPED').count()==1
+        set_setting('auto_email_enabled','1')
+        missing=_add_high_risk_enrollment(None); run_auto_pipeline([missing.id])
+        assert not captured and Alert.query.count()==2
+        assert not captured and Prediction.query.count()==2 and Alert.query.count()==2
+
+def test_auto_pipeline_smtp_failure_keeps_prediction_and_alert(app, monkeypatch):
+    import smtplib
+    with app.app_context():
+        _configure_high_risk_model(app); app.config.update(MAIL_MODE='smtp',SMTP_HOST='smtp.example.com',SMTP_USERNAME='test@example.com',SMTP_PASSWORD='secret',SMTP_FROM='test@example.com')
+        set_setting('auto_prediction_enabled','1'); set_setting('auto_email_enabled','1')
+        enrollment=_add_high_risk_enrollment('failed@example.com')
+        monkeypatch.setattr(smtplib,'SMTP',lambda *args,**kwargs: (_ for _ in ()).throw(smtplib.SMTPException('failed')))
+        run_auto_pipeline([enrollment.id])
+        assert Prediction.query.count()==1 and Alert.query.count()==1 and EmailLog.query.filter_by(status='FAILED').count()==1
 
 def _csv(body):
     header=",".join(["student_code","full_name","class_name","email","course_code","course_name","semester_code","semester_name","current_week","score","attendance_rate","late_submissions"])
@@ -279,6 +369,61 @@ def test_smtp_partial_configuration_and_failure(app, monkeypatch):
         assert send_email('student@example.com','Test','Preview')=='FAILED'
         assert EmailLog.query.filter_by(status='SENT').count()==0
 
+def test_risk_alert_renderer_uses_real_values_and_escapes_html(app):
+    from types import SimpleNamespace
+    with app.app_context():
+        student=SimpleNamespace(full_name='<Sinh viên>')
+        enrollment=SimpleNamespace(course=SimpleNamespace(name='Cơ sở dữ liệu'),current_week=5,score=5.8,attendance_rate=7.2,late_submissions=2)
+        prediction=SimpleNamespace(risk_level='TRUNG_BINH',probability=.68)
+        recommendations=[SimpleNamespace(content='Ôn tập <an toàn>.')]
+        plain,html=render_risk_alert_email(student,enrollment,prediction,recommendations)
+        assert '&lt;Sinh viên&gt;' in html and '&lt;an toàn&gt;' in html
+        for value in ('Cơ sở dữ liệu','Tuần 5','Cần theo dõi','68.0%','5.8','7.2/10','2','Gợi ý cải thiện','Đây là cảnh báo hỗ trợ học tập'):
+            assert value in html
+        assert 'Điểm chuyên cần: 7.2/10' in plain
+
+def test_risk_alert_email_unicode_round_trip_through_mime(app, monkeypatch):
+    import smtplib
+    from email import policy
+    from email.parser import BytesParser
+    from types import SimpleNamespace
+    from app.services import send_email
+    subject='[TEST] [Cảnh báo học tập] Thông báo nguy cơ học tập'
+    student=SimpleNamespace(full_name='Sinh viên DEMO')
+    enrollment=SimpleNamespace(course=SimpleNamespace(name='Cơ sở dữ liệu'),current_week=5,score=5.8,attendance_rate=7.2,late_submissions=2)
+    prediction=SimpleNamespace(risk_level='TRUNG_BINH',probability=.68)
+    recommendation_texts=('Ôn tập lại các nội dung chưa đạt yêu cầu.','Cải thiện mức độ tham gia lớp học.','Hoàn thành bài tập đúng hạn.','Trao đổi với cố vấn học tập nếu cần hỗ trợ.')
+    recommendations=[SimpleNamespace(content=value) for value in recommendation_texts]
+    captured=[]
+    class FakeSMTP:
+        def __init__(self,*args,**kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self,*args): return False
+        def starttls(self): pass
+        def login(self,*args): pass
+        def send_message(self,message): captured.append(message.as_bytes())
+    with app.app_context():
+        for value in (student.full_name,enrollment.course.name,*recommendation_texts,subject):
+            assert '?' not in value
+        plain,html=render_risk_alert_email(student,enrollment,prediction,recommendations)
+        for value in (student.full_name,enrollment.course.name,*recommendation_texts):
+            assert value in plain and value in html
+        app.config.update(MAIL_MODE='smtp',SMTP_HOST='smtp.example.com',SMTP_USERNAME='test@example.com',SMTP_PASSWORD='secret',SMTP_FROM='test@example.com')
+        monkeypatch.setattr(smtplib,'SMTP',FakeSMTP)
+        assert send_email('student@example.com',subject,plain,html_body=html)=='SENT'
+    parsed=BytesParser(policy=policy.default).parsebytes(captured[0])
+    text_part=parsed.get_body(preferencelist=('plain',))
+    html_part=parsed.get_body(preferencelist=('html',))
+    assert parsed['Subject']==subject
+    assert text_part.get_content_charset()=='utf-8' and html_part.get_content_charset()=='utf-8'
+    for value in (student.full_name,enrollment.course.name,*recommendation_texts):
+        assert value in text_part.get_content() and value in html_part.get_content()
+
+def test_admin_email_preview_uses_production_warning_template(auth):
+    response=auth.get('/settings/email-preview')
+    assert response.status_code==200
+    assert 'Sinh viên DEMO' in response.text and 'Cơ sở dữ liệu' in response.text and '7.2/10' in response.text
+
 
 def test_smtp_success_and_admin_test_email(app, auth, monkeypatch):
     import smtplib
@@ -297,6 +442,32 @@ def test_smtp_success_and_admin_test_email(app, auth, monkeypatch):
         assert EmailLog.query.filter_by(status='SENT').count()==1
     response=auth.post('/settings/test-email',data={'recipient':'student@example.com'},follow_redirects=True)
     assert response.status_code==200 and b'secret' not in response.data.lower()
+
+def test_admin_demo_risk_email_uses_production_warning_template(app, auth, monkeypatch):
+    import smtplib
+    from email import policy
+    from email.parser import BytesParser
+    captured=[]
+    class FakeSMTP:
+        def __init__(self,*args,**kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self,*args): return False
+        def starttls(self): pass
+        def login(self,*args): pass
+        def send_message(self,message): captured.append(message.as_bytes())
+    with app.app_context():
+        app.config.update(MAIL_MODE='smtp',SMTP_HOST='smtp.example.com',SMTP_USERNAME='test@example.com',SMTP_PASSWORD='secret',SMTP_FROM='test@example.com')
+    monkeypatch.setattr(smtplib,'SMTP',FakeSMTP)
+    response=auth.post('/settings/email/demo',data={'recipient':'student@example.com'})
+    assert response.status_code==200 and response.json['status']=='SENT'
+    parsed=BytesParser(policy=policy.default).parsebytes(captured[0])
+    html=parsed.get_body(preferencelist=('html',)).get_content()
+    plain=parsed.get_body(preferencelist=('plain',)).get_content()
+    assert parsed['Subject']=='[TEST] [Cảnh báo học tập] Thông báo nguy cơ học tập'
+    for marker in ('Sinh viên DEMO','Cơ sở dữ liệu','7.2/10','Mức nguy cơ tổng quan','Thông tin môn học','Một số chỉ số học tập','Gợi ý cải thiện','Kết quả dự báo mang tính hỗ trợ'):
+        assert marker in html
+    assert 'Sinh viên DEMO' in plain and 'Cơ sở dữ liệu' in plain and '7.2/10' in plain
+    assert 'THÔNG BÁO DEMO' not in html
 
 
 def test_covan_cannot_send_test_email(app, client):

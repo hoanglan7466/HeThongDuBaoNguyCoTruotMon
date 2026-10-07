@@ -13,33 +13,7 @@ from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, 
 FEATURES = ["score", "attendance_rate", "late_submissions"]
 REQUIRED_COLUMNS = ["student_code", "full_name", "class_name", "email", "course_code", "course_name", "semester_code", "semester_name", "current_week", *FEATURES]
 LEGACY_MAJORS = {"CNTT":"Công nghệ thông tin", "QTKD":"Quản trị kinh doanh", "NNH":"Ngôn ngữ học"}
-DEMO_EMAIL_SUBJECT = "[Cảnh báo học tập] Thông báo nguy cơ học tập"
-DEMO_EMAIL_MESSAGE = """Xin chào sinh viên,
-
-Hệ thống ghi nhận kết quả học tập hiện tại của bạn có một số chỉ số cần được lưu ý.
-
-Môn học: Cơ sở dữ liệu
-Tuần phân tích: Tuần 5
-Mức nguy cơ: Cần theo dõi
-Xác suất dự báo: 68%
-
-Một số chỉ số học tập:
-- Điểm hiện tại: 5.8
-- Tỷ lệ điểm chuyên cần: 7.2/10
-- Số lần nộp bài trễ: 2
-
-Gợi ý:
-- Ôn tập lại các nội dung chưa đạt yêu cầu.
-- Cải thiện tỷ lệ tham gia lớp học.
-- Hoàn thành bài tập đúng hạn.
-- Trao đổi với cố vấn học tập nếu cần hỗ trợ.
-
-Đây là cảnh báo hỗ trợ học tập được tạo từ hệ thống phân tích dữ liệu.
-Kết quả dự báo mang tính hỗ trợ và không thay thế đánh giá của giảng viên hoặc cố vấn học tập.
-
-Trân trọng,
-Hệ thống phân tích kết quả học tập và dự báo nguy cơ trượt môn
-Đại học Đại Nam"""
+DEMO_EMAIL_SUBJECT = "[TEST] [Cảnh báo học tập] Thông báo nguy cơ học tập"
 
 def risk_level(probability):
     if probability >= current_app.config["RISK_HIGH_THRESHOLD"]: return "CAO"
@@ -240,7 +214,7 @@ def recommendations_for(e):
     if not result: result.append(("DUY_TRI", "Các chỉ số hiện ổn định; tiếp tục duy trì nhịp học và theo dõi hàng tuần."))
     return result
 
-def predict_enrollment(e, send_auto_email=True):
+def predict_enrollment(e, send_auto_email=False):
     if e.current_week < 5:
         raise ValueError("Chưa đủ dữ liệu để thực hiện dự báo từ tuần 5.")
     bundle=model_bundle(); probability=float(bundle["model"].predict_proba(pd.DataFrame([[e.score,e.attendance_rate,e.late_submissions]],columns=FEATURES))[0][1])
@@ -266,11 +240,28 @@ def predict_enrollment(e, send_auto_email=True):
         db.session.add(EmailLog(recipient=e.student.email,subject="AUTO_EMAIL_DISABLED",status="SKIPPED",preview="AUTO_EMAIL_DISABLED")); db.session.commit()
     if created_alert and e.student.email and send_auto_email:
         subject=f"[Cảnh báo học tập] Nguy cơ học tập - {e.course.name}"
-        context={"student":e.student,"enrollment":e,"prediction":p,"recommendations":Recommendation.query.filter_by(enrollment_id=e.id).all()}
-        plain=render_template("email/risk_alert.txt",**context)
-        html=render_template("email/risk_alert.html",**context)
+        plain,html=render_risk_alert_email(e.student,e,p,Recommendation.query.filter_by(enrollment_id=e.id).all())
         send_email(e.student.email,subject,plain,html_body=html)
     return p
+
+def render_risk_alert_email(student, enrollment, prediction, recommendations):
+    """Render the multipart academic-warning content used by delivery and preview."""
+    context={"student":student,"enrollment":enrollment,"prediction":prediction,"recommendations":recommendations}
+    return render_template("email/risk_alert.txt",**context), render_template("email/risk_alert.html",**context)
+
+def render_demo_risk_alert_email():
+    """Render the safe demo warning used by the admin preview and demo send flow."""
+    from types import SimpleNamespace
+    student=SimpleNamespace(full_name="Sinh viên DEMO")
+    enrollment=SimpleNamespace(course=SimpleNamespace(name="Cơ sở dữ liệu"),current_week=5,score=5.8,attendance_rate=7.2,late_submissions=2)
+    prediction=SimpleNamespace(risk_level="TRUNG_BINH",probability=.68)
+    recommendations=[SimpleNamespace(content=value) for value in (
+        "Ôn tập lại các nội dung chưa đạt yêu cầu.",
+        "Cải thiện mức độ tham gia lớp học.",
+        "Hoàn thành bài tập đúng hạn.",
+        "Trao đổi với cố vấn học tập nếu cần hỗ trợ.",
+    )]
+    return render_risk_alert_email(student,enrollment,prediction,recommendations)
 
 def smtp_configured():
     return current_app.config.get("MAIL_MODE") == "smtp" and all(current_app.config.get(key) for key in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"))
@@ -288,8 +279,8 @@ def send_email(recipient, subject, body, html_body=None):
         db.session.add(EmailLog(recipient=recipient or "unknown",subject=subject,status="SKIPPED",preview="Recipient không hợp lệ hoặc thuộc domain demo.")); db.session.commit(); return "SKIPPED"
     if not smtp_configured():
         db.session.add(EmailLog(recipient=recipient,subject=subject,status="DEV_PREVIEW",preview=body)); db.session.commit(); current_app.logger.info("EMAIL DEV_PREVIEW recipient=%s subject=%s",recipient,subject); return "DEV_PREVIEW"
-    msg=EmailMessage(); msg["From"]=formataddr((cfg.get("MAIL_FROM_NAME"),cfg["SMTP_FROM"])); msg["To"]=recipient; msg["Subject"]=subject; msg.set_content(body)
-    if html_body: msg.add_alternative(html_body,subtype="html")
+    msg=EmailMessage(); msg["From"]=formataddr((cfg.get("MAIL_FROM_NAME"),cfg["SMTP_FROM"])); msg["To"]=recipient; msg["Subject"]=subject; msg.set_content(body,charset="utf-8")
+    if html_body: msg.add_alternative(html_body,subtype="html",charset="utf-8")
     try:
         with smtplib.SMTP(cfg["SMTP_HOST"],cfg["SMTP_PORT"],timeout=15) as server:
             if cfg["SMTP_USE_TLS"]: server.starttls()
@@ -300,7 +291,7 @@ def send_email(recipient, subject, body, html_body=None):
         return "FAILED"
     db.session.add(EmailLog(recipient=recipient,subject=subject,status="SENT")); db.session.commit(); return "SENT"
 
-def send_demo_email(recipient, subject, message):
-    """Send an admin-authored demo message without touching prediction data."""
-    html=render_template("email/demo_notification.html", message=message)
-    return send_email(recipient, subject, message, html_body=html)
+def send_demo_email(recipient):
+    """Send the safe demo risk alert without touching prediction data."""
+    plain,html=render_demo_risk_alert_email()
+    return send_email(recipient, DEMO_EMAIL_SUBJECT, plain, html_body=html)
