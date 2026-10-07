@@ -9,8 +9,32 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_score, recall_score, f1_score, roc_auc_score
 from sklearn.model_selection import GroupShuffleSplit
 from .extensions import db
-from .models import ModelVersion, User
-from .services import FEATURES
+from .models import Major, ModelVersion, Student, User
+from .services import FEATURES, LEGACY_MAJORS, legacy_major_code
+
+def _upgrade_major_schema():
+    """Add the nullable Student -> Major relation and backfill known legacy codes."""
+    changed=False
+    student_columns={column["name"] for column in inspect(db.engine).get_columns("student")}
+    if "major_id" not in student_columns:
+        db.session.execute(db.text("ALTER TABLE student ADD COLUMN major_id INTEGER NULL")); changed=True
+    indexes={item["name"] for item in inspect(db.engine).get_indexes("student")}
+    if "ix_student_major_id" not in indexes:
+        db.session.execute(db.text("CREATE INDEX ix_student_major_id ON student (major_id)")); changed=True
+    if db.engine.dialect.name == "mysql":
+        foreign_keys=inspect(db.engine).get_foreign_keys("student")
+        if not any(item.get("referred_table")=="major" and "major_id" in item.get("constrained_columns",[]) for item in foreign_keys):
+            db.session.execute(db.text("ALTER TABLE student ADD CONSTRAINT fk_student_major_id FOREIGN KEY (major_id) REFERENCES major (id)")); changed=True
+    majors={major.code:major for major in Major.query.filter(Major.code.in_(LEGACY_MAJORS)).all()}
+    for code,name in LEGACY_MAJORS.items():
+        if code not in majors:
+            majors[code]=Major(code=code,name=name); db.session.add(majors[code]); changed=True
+    db.session.flush()
+    for student in Student.query.filter(Student.major_id.is_(None)).all():
+        code=legacy_major_code(student.class_name)
+        if code:
+            student.major=majors[code]; changed=True
+    return changed
 
 def _upgrade_schema():
     """Apply additive migrations for installations without Alembic."""
@@ -48,6 +72,7 @@ def _upgrade_schema():
             db.session.execute(db.text(f"ALTER TABLE enrollment DROP INDEX `{old['name']}`")); changed=True
         if not weekly:
             db.session.execute(db.text("ALTER TABLE enrollment ADD CONSTRAINT uq_enrollment_snapshot UNIQUE (student_id, course_id, semester_id, current_week)")); changed=True
+    changed=_upgrade_major_schema() or changed
     db.session.commit(); return changed
 
 def register_commands(app):

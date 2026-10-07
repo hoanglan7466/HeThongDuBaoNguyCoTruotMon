@@ -20,15 +20,23 @@ class User(UserMixin, db.Model):
     def set_password(self, value): self.password_hash = generate_password_hash(value)
     def check_password(self, value): return check_password_hash(self.password_hash, value)
 
+class Major(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(30), unique=True, nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    students = db.relationship("Student", back_populates="major")
+
 class Student(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     student_code = db.Column(db.String(30), unique=True, nullable=False, index=True)
     full_name = db.Column(db.String(120), nullable=False)
     class_name = db.Column(db.String(50), nullable=False)
+    major_id = db.Column(db.Integer, db.ForeignKey("major.id"), index=True)
     email = db.Column(db.String(150))
     is_demo = db.Column(db.Boolean, nullable=False, default=False, index=True)
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
     enrollments = db.relationship("Enrollment", back_populates="student", cascade="all, delete-orphan")
+    major = db.relationship("Major", back_populates="students")
 
 class Course(db.Model):
     id = db.Column(db.Integer, primary_key=True)

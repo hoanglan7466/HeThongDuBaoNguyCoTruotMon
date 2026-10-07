@@ -1,11 +1,40 @@
 import csv, io, joblib, pytest
 from sklearn.ensemble import RandomForestClassifier
 from app.extensions import db
-from app.models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, Prediction, Recommendation, Semester, Student, User
+from app.cli import _upgrade_schema
+from app.models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, Major, Prediction, Recommendation, Semester, Student, User
 from app.services import FEATURES, import_rows, predict_enrollment, risk_level, validate_csv
 
 def test_health(client):
     r=client.get("/health"); assert r.status_code==200 and r.json["database"]=="ok"
+
+def test_csv_legacy_major_backfill_and_relation_filter(app, client, auth):
+    rows,errors=validate_csv(_csv("MAJOR1,Nguyen An,CNTT01,,M1,Mon,HK1,Hoc ky,5,7,8,0"))
+    assert not errors
+    with app.app_context():
+        import_rows(rows)
+        known=Student.query.filter_by(student_code="MAJOR1").first()
+        unknown_major=Major(code="DATA",name="Du lieu"); db.session.add(unknown_major)
+        unknown=Student(student_code="MAJOR2",full_name="Tran Binh",class_name="Lop tu do",major=unknown_major)
+        db.session.add(unknown); db.session.commit()
+        assert known.major.code=="CNTT"
+        assert Major.query.filter_by(code="CNTT").one().name
+    page=auth.get("/students?major=DATA")
+    assert page.status_code==200 and "MAJOR2" in page.text and "MAJOR1" not in page.text
+    with app.app_context():
+        assert Student.query.filter_by(student_code="MAJOR2").one().major.code=="DATA"
+
+def test_major_backfill_migration_is_idempotent(app):
+    with app.app_context():
+        db.session.add_all([
+            Student(student_code="BACKFILL1",full_name="Known",class_name="QTKD01"),
+            Student(student_code="BACKFILL2",full_name="Unknown",class_name="Lop tu do"),
+        ])
+        db.session.commit()
+        _upgrade_schema(); _upgrade_schema()
+        assert Student.query.filter_by(student_code="BACKFILL1").one().major.code=="QTKD"
+        assert Student.query.filter_by(student_code="BACKFILL2").one().major is None
+        assert Major.query.filter(Major.code.in_(["CNTT","QTKD","NNH"])).count()==3
 
 def test_attendance_uses_ten_point_scale():
     valid="SCALE,An,C1,,M1,Mon,HK1,Hoc ky,5,5,0,0"

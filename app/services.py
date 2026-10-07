@@ -8,10 +8,11 @@ import joblib
 import pandas as pd
 from flask import current_app, render_template
 from .extensions import db
-from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, ModelVersion, Prediction, Recommendation, Semester, Student, SystemSetting
+from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, Major, ModelVersion, Prediction, Recommendation, Semester, Student, SystemSetting
 
 FEATURES = ["score", "attendance_rate", "late_submissions"]
 REQUIRED_COLUMNS = ["student_code", "full_name", "class_name", "email", "course_code", "course_name", "semester_code", "semester_name", "current_week", *FEATURES]
+LEGACY_MAJORS = {"CNTT":"Công nghệ thông tin", "QTKD":"Quản trị kinh doanh", "NNH":"Ngôn ngữ học"}
 DEMO_EMAIL_SUBJECT = "[Cảnh báo học tập] Thông báo nguy cơ học tập"
 DEMO_EMAIL_MESSAGE = """Xin chào sinh viên,
 
@@ -44,6 +45,21 @@ def risk_level(probability):
     if probability >= current_app.config["RISK_HIGH_THRESHOLD"]: return "CAO"
     if probability >= current_app.config["RISK_MEDIUM_THRESHOLD"]: return "TRUNG_BINH"
     return "ON_DINH"
+
+def legacy_major_code(class_name):
+    """Return a known legacy major code, never infer an unknown major."""
+    match=re.match(r"^\s*([A-Za-z]+)(?=\s|[-_]?\d|$)", class_name or "")
+    code=match.group(1).upper() if match else None
+    return code if code in LEGACY_MAJORS else None
+
+def major_for_legacy_class(class_name, cache=None):
+    code=legacy_major_code(class_name)
+    if not code: return None
+    majors=cache if cache is not None else {item.code:item for item in Major.query.filter(Major.code.in_(LEGACY_MAJORS)).all()}
+    major=majors.get(code)
+    if not major:
+        major=Major(code=code,name=LEGACY_MAJORS[code]); db.session.add(major); db.session.flush(); majors[code]=major
+    return major
 
 def validate_csv(stream):
     try: text = stream.read().decode("utf-8-sig")
@@ -83,7 +99,9 @@ def import_rows(rows, is_demo=False, filename="uploaded.csv", imported_by=None):
         for r in rows:
             student = Student.query.filter_by(student_code=r["student_code"]).first()
             if not student:
-                student = Student(student_code=r["student_code"], full_name=r["full_name"], class_name=r["class_name"], email=r["email"] or None, is_demo=is_demo); db.session.add(student)
+                student = Student(student_code=r["student_code"], full_name=r["full_name"], class_name=r["class_name"], email=r["email"] or None, is_demo=is_demo, major=major_for_legacy_class(r["class_name"])); db.session.add(student)
+            elif not student.major:
+                student.major=major_for_legacy_class(r["class_name"])
             course = Course.query.filter_by(code=r["course_code"]).first()
             if not course: course = Course(code=r["course_code"], name=r["course_name"]); db.session.add(course)
             semester = Semester.query.filter_by(code=r["semester_code"]).first()
@@ -101,11 +119,14 @@ def import_rows_batched(rows, is_demo=False, filename="uploaded.csv", imported_b
         if batch: db.session.add(batch)
         student_codes={r["student_code"] for r in rows}; course_codes={r["course_code"] for r in rows}; semester_codes={r["semester_code"] for r in rows}
         students={item.student_code:item for item in Student.query.filter(Student.student_code.in_(student_codes)).all()} if student_codes else {}
+        majors={item.code:item for item in Major.query.filter(Major.code.in_(LEGACY_MAJORS)).all()}
         courses={item.code:item for item in Course.query.filter(Course.code.in_(course_codes)).all()} if course_codes else {}
         semesters={item.code:item for item in Semester.query.filter(Semester.code.in_(semester_codes)).all()} if semester_codes else {}
         for r in rows:
             if r["student_code"] not in students:
-                students[r["student_code"]]=Student(student_code=r["student_code"],full_name=r["full_name"],class_name=r["class_name"],email=r["email"] or None,is_demo=is_demo); db.session.add(students[r["student_code"]])
+                students[r["student_code"]]=Student(student_code=r["student_code"],full_name=r["full_name"],class_name=r["class_name"],email=r["email"] or None,is_demo=is_demo,major=major_for_legacy_class(r["class_name"],majors)); db.session.add(students[r["student_code"]])
+            elif not students[r["student_code"]].major:
+                students[r["student_code"]].major=major_for_legacy_class(r["class_name"],majors)
             if r["course_code"] not in courses:
                 courses[r["course_code"]]=Course(code=r["course_code"],name=r["course_name"]); db.session.add(courses[r["course_code"]])
             if r["semester_code"] not in semesters:
