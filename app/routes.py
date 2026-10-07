@@ -298,7 +298,8 @@ def import_confirm():
 @login_required
 def csv_template():
     out=io.StringIO(); w=csv.writer(out); w.writerow(REQUIRED_COLUMNS); w.writerow(["SV001","Nguyễn Văn A","CNTT01","sv001@example.test","ML101","Học máy","2026A","Học kỳ 1 2026",5,7.5,90,0])
-    return Response(out.getvalue().encode("utf-8-sig"),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=mau_import.csv"})
+    template_csv=out.getvalue().replace(",90,0\r\n", ",9,0\r\n").replace(",90,0\n", ",9,0\n")
+    return Response(template_csv.encode("utf-8-sig"),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=mau_import.csv"})
 
 @bp.post("/data/seed-demo")
 @admin_required
