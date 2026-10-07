@@ -45,7 +45,7 @@ class Enrollment(db.Model):
     __table_args__ = (
         db.UniqueConstraint("student_id", "course_id", "semester_id", "current_week", name="uq_enrollment_snapshot"),
         db.CheckConstraint("score >= 0 AND score <= 10", name="ck_enrollment_score"),
-        db.CheckConstraint("attendance_rate >= 0 AND attendance_rate <= 100", name="ck_enrollment_attendance"),
+        db.CheckConstraint("attendance_rate >= 0 AND attendance_rate <= 10", name="ck_enrollment_attendance"),
         db.CheckConstraint("late_submissions >= 0", name="ck_enrollment_late"),
         db.CheckConstraint("current_week >= 1", name="ck_enrollment_week"),
     )

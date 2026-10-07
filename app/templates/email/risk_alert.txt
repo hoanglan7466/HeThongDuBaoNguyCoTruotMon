@@ -11,7 +11,7 @@ Xác suất dự báo: {{ '%.1f'|format(prediction.probability * 100) }}%
 
 Các chỉ số liên quan:
 - Điểm hiện tại: {{ '%.1f'|format(enrollment.score) }}/10
-- Tỷ lệ chuyên cần: {{ '%.0f'|format(enrollment.attendance_rate) }}%
+- Điểm chuyên cần: {{ '%.0f'|format(enrollment.attendance_rate) }}/10
 - Số lần nộp bài trễ: {{ enrollment.late_submissions }}
 
 Gợi ý học tập:

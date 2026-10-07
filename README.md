@@ -51,7 +51,7 @@ Mở `http://127.0.0.1:5000`. Môi trường DEMO/development có hai tài kho�
 
 ## Import CSV
 
-Tải mẫu tại `/data/template.csv`. Các cột bắt buộc: `student_code, full_name, class_name, email, course_code, course_name, semester_code, semester_name, current_week, score, attendance_rate, late_submissions`. Điểm 0–10, chuyên cần 0–100, nộp trễ không âm. Dữ liệu lỗi không được ghi.
+Tải mẫu tại `/data/template.csv`. Các cột bắt buộc: `student_code, full_name, class_name, email, course_code, course_name, semester_code, semester_name, current_week, score, attendance_rate, late_submissions`. Điểm 0–10, chuyên cần 0–10, nộp trễ không âm. Dữ liệu lỗi không được ghi.
 
 ## Kiểm thử và xác minh local
 

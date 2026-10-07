@@ -19,9 +19,9 @@ Khởi động bằng lệnh duy nhất trong README, mở `http://127.0.0.1:500
 
 **Vì sao chọn Random Forest?**  Mô hình xử lý tốt quan hệ phi tuyến, ít yêu cầu chuẩn hóa và cho phép xem mức quan trọng của đặc trưng. Implementation dùng 250 cây, độ sâu tối đa 8, `min_samples_leaf=3`, cân bằng lớp và `random_state=42`.
 
-**Dữ liệu đầu vào là gì?**  Ba đặc trưng đúng với implementation: điểm hiện tại, tỷ lệ chuyên cần và số lần nộp bài trễ. Chỉ dự báo từ tuần 5.
+**Dữ liệu đầu vào là gì?**  Ba đặc trưng đúng với implementation: điểm hiện tại, điểm chuyên cần và số lần nộp bài trễ. Chỉ dự báo từ tuần 5.
 
-**Metrics lấy ở đâu?**  Accuracy, precision, recall, F1 và confusion matrix được tính trên 25% hold-out có stratify sau mỗi lần chạy `flask train-model`, sau đó ghi vào artifact joblib, metadata JSON và bảng ModelVersion; không hard-code trên giao diện.
+**Metrics lấy ở đâu?**  Accuracy, precision, recall, F1 và confusion matrix được tính trên 25% hold-out, chia nhóm theo sinh viên bằng GroupShuffleSplit sau mỗi lần chạy `flask train-model`, sau đó ghi vào artifact joblib, metadata JSON và bảng ModelVersion; không hard-code trên giao diện.
 
 **Xác suất có phải xác suất trượt chắc chắn không?**  Không. Đây là tỷ lệ phiếu của tập hợp cây sau huấn luyện, dùng để xếp ưu tiên hỗ trợ. Cần hiệu chỉnh và đánh giá lại bằng dữ liệu thật trước vận hành.
 

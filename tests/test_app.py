@@ -7,6 +7,17 @@ from app.services import FEATURES, import_rows, predict_enrollment, risk_level, 
 def test_health(client):
     r=client.get("/health"); assert r.status_code==200 and r.json["database"]=="ok"
 
+def test_attendance_uses_ten_point_scale():
+    valid="SCALE,An,C1,,M1,Mon,HK1,Hoc ky,5,5,0,0"
+    rows,errors=validate_csv(_csv(valid))
+    assert len(rows)==1 and not errors and rows[0]["attendance_rate"]==0.0
+    valid="SCALE2,An,C1,,M1,Mon,HK1,Hoc ky,5,5,10,0"
+    rows,errors=validate_csv(_csv(valid))
+    assert len(rows)==1 and not errors and rows[0]["attendance_rate"]==10.0
+    invalid="SCALE3,An,C1,,M1,Mon,HK1,Hoc ky,5,5,10.1,0"
+    rows,errors=validate_csv(_csv(invalid))
+    assert not rows and errors
+
 def test_auth_and_protection(client):
     assert client.get("/").status_code==302
     assert "Tổng quan" in client.post("/login",data={"username":"admin","password":"StrongPass123!"},follow_redirects=True).text
@@ -31,7 +42,7 @@ def test_prediction_and_alert(app,tmp_path):
         import pandas as pd
         x=pd.DataFrame([[2,5,5],[3,6,4],[8,9,0],[9,10,0],[4,6,3],[7,9,1]],columns=FEATURES); y=[1,1,0,0,1,0]
         m=RandomForestClassifier(n_estimators=20,random_state=42).fit(x,y); joblib.dump({"model":m,"metadata":{"version":"test-v1"}},app.config["MODEL_PATH"])
-        s=Student(student_code="S1",full_name="SV",class_name="C1"); c=Course(code="C",name="Môn"); sem=Semester(code="HK",name="Học kỳ"); db.session.add_all([s,c,sem]); db.session.flush(); e=Enrollment(student=s,course=c,semester=sem,current_week=5,score=2,attendance_rate=55,late_submissions=5); db.session.add(e); db.session.commit()
+        s=Student(student_code="S1",full_name="SV",class_name="C1"); c=Course(code="C",name="Môn"); sem=Semester(code="HK",name="Học kỳ"); db.session.add_all([s,c,sem]); db.session.flush(); e=Enrollment(student=s,course=c,semester=sem,current_week=5,score=2,attendance_rate=5,late_submissions=5); db.session.add(e); db.session.commit()
         p=predict_enrollment(e); assert p.probability>=.65 and p.week_number==5 and Alert.query.count()==1
         assert Prediction.query.count()==1 and db.session.execute(db.text("SELECT 1")).scalar()==1
         assert Recommendation.query.count()>=1 and EmailLog.query.filter_by(status="DEV_PREVIEW").count()==0
@@ -41,17 +52,17 @@ def test_prediction_and_alert(app,tmp_path):
 def test_prediction_requires_week_five(app, tmp_path):
     with app.app_context():
         s=Student(student_code="EARLY",full_name="Early",class_name="C1"); c=Course(code="EARLY",name="Môn"); sem=Semester(code="EARLY",name="Học kỳ")
-        db.session.add_all([s,c,sem]); db.session.flush(); enrollment=Enrollment(student=s,course=c,semester=sem,current_week=4,score=5,attendance_rate=80,late_submissions=0); db.session.add(enrollment); db.session.commit()
+        db.session.add_all([s,c,sem]); db.session.flush(); enrollment=Enrollment(student=s,course=c,semester=sem,current_week=4,score=5,attendance_rate=8,late_submissions=0); db.session.add(enrollment); db.session.commit()
         with pytest.raises(ValueError, match="Chưa đủ dữ liệu"): predict_enrollment(enrollment)
         assert Prediction.query.count()==0
 
 def test_prediction_allows_week_six(app, tmp_path):
     with app.app_context():
         import pandas as pd
-        model=RandomForestClassifier(n_estimators=10,random_state=42).fit(pd.DataFrame([[2,55,5],[9,98,0]],columns=FEATURES),[1,0])
+        model=RandomForestClassifier(n_estimators=10,random_state=42).fit(pd.DataFrame([[2,5,5],[9,9,0]],columns=FEATURES),[1,0])
         joblib.dump({"model":model,"metadata":{"version":"week-six","features":FEATURES}},app.config["MODEL_PATH"])
         s=Student(student_code="WEEK6",full_name="Week Six",class_name="C1"); c=Course(code="W6",name="Môn tuần 6"); sem=Semester(code="W6",name="Học kỳ")
-        db.session.add_all([s,c,sem]); db.session.flush(); enrollment=Enrollment(student=s,course=c,semester=sem,current_week=6,score=2,attendance_rate=55,late_submissions=5); db.session.add(enrollment); db.session.commit()
+        db.session.add_all([s,c,sem]); db.session.flush(); enrollment=Enrollment(student=s,course=c,semester=sem,current_week=6,score=2,attendance_rate=5,late_submissions=5); db.session.add(enrollment); db.session.commit()
         assert predict_enrollment(enrollment).week_number==6
 
 def _csv(body):
@@ -108,10 +119,10 @@ def test_pages_and_dashboard_api(auth):
 def test_report_filter_and_export(app,auth,tmp_path):
     with app.app_context():
         import pandas as pd
-        model=RandomForestClassifier(n_estimators=20,random_state=42).fit(pd.DataFrame([[1,50,5],[9,100,0]],columns=FEATURES),[1,0])
+        model=RandomForestClassifier(n_estimators=20,random_state=42).fit(pd.DataFrame([[1,5,5],[9,10,0]],columns=FEATURES),[1,0])
         joblib.dump({"model":model,"metadata":{"version":"filter-v1","features":FEATURES}},app.config["MODEL_PATH"])
         s=Student(student_code="FILTER1",full_name="Nguyễn An",class_name="C1"); c=Course(code="M1",name="Môn 1"); sem=Semester(code="HK1",name="Học kỳ 1")
-        db.session.add_all([s,c,sem]); db.session.flush(); course_id, semester_id=c.id, sem.id; e=Enrollment(student=s,course=c,semester=sem,current_week=5,score=1,attendance_rate=50,late_submissions=5); db.session.add(e); db.session.commit(); predict_enrollment(e)
+        db.session.add_all([s,c,sem]); db.session.flush(); course_id, semester_id=c.id, sem.id; e=Enrollment(student=s,course=c,semester=sem,current_week=5,score=1,attendance_rate=5,late_submissions=5); db.session.add(e); db.session.commit(); predict_enrollment(e)
     response=auth.get("/reports?risk=CAO&q=FILTER")
     assert response.status_code==200 and "FILTER1" in response.text
     exported=auth.get("/reports/export.csv?risk=CAO&q=FILTER")
@@ -122,7 +133,7 @@ def test_report_filter_and_export(app,auth,tmp_path):
 def test_database_constraints(app):
     with app.app_context():
         s=Student(student_code="BAD",full_name="Bad",class_name="C"); c=Course(code="BAD",name="Bad"); sem=Semester(code="BAD",name="Bad"); db.session.add_all([s,c,sem]); db.session.flush()
-        db.session.add(Enrollment(student=s,course=c,semester=sem,current_week=5,score=11,attendance_rate=80,late_submissions=0))
+        db.session.add(Enrollment(student=s,course=c,semester=sem,current_week=5,score=11,attendance_rate=8,late_submissions=0))
         with pytest.raises(Exception): db.session.commit()
         db.session.rollback()
 
@@ -216,7 +227,7 @@ def test_covan_cannot_send_test_email(app, client):
 def test_admin_delete_student_with_dependents_and_covan_forbidden(app, auth, client):
     from app.models import Alert, Course, Enrollment, Prediction, Recommendation, Semester, Student
     with app.app_context():
-        s=Student(student_code='DEL1',full_name='Delete Me',class_name='C1'); c=Course(code='DEL',name='Delete Course'); sem=Semester(code='DELSEM',name='Delete Semester'); db.session.add_all([s,c,sem]); db.session.flush(); e=Enrollment(student=s,course=c,semester=sem,current_week=5,score=2,attendance_rate=50,late_submissions=3); db.session.add(e); db.session.flush(); p=Prediction(enrollment=e,probability=.9,risk_level='CAO',model_version='test',week_number=5,factors_json='[]'); db.session.add(p); db.session.flush(); db.session.add_all([Alert(enrollment=e,prediction_id=p.id,title='test'),Recommendation(enrollment_id=e.id,category='DIEM',content='test')]); db.session.commit(); sid=s.id
+        s=Student(student_code='DEL1',full_name='Delete Me',class_name='C1'); c=Course(code='DEL',name='Delete Course'); sem=Semester(code='DELSEM',name='Delete Semester'); db.session.add_all([s,c,sem]); db.session.flush(); e=Enrollment(student=s,course=c,semester=sem,current_week=5,score=2,attendance_rate=5,late_submissions=3); db.session.add(e); db.session.flush(); p=Prediction(enrollment=e,probability=.9,risk_level='CAO',model_version='test',week_number=5,factors_json='[]'); db.session.add(p); db.session.flush(); db.session.add_all([Alert(enrollment=e,prediction_id=p.id,title='test'),Recommendation(enrollment_id=e.id,category='DIEM',content='test')]); db.session.commit(); sid=s.id
     assert auth.post(f'/students/{sid}/delete').status_code==302
     with app.app_context():
         assert db.session.get(Student,sid) is None and Enrollment.query.count()==0 and Prediction.query.count()==0 and Alert.query.count()==0 and Recommendation.query.count()==0
@@ -345,7 +356,7 @@ def test_loading_demo_twice_does_not_duplicate(app, auth):
 def test_analysis_week_four_blocks_backend(app, auth):
     with app.app_context():
         s=Student(student_code="BLOCK4",full_name="Tuần Bốn",class_name="C1"); c=Course(code="B4",name="Môn tuần 4"); sem=Semester(code="B4",name="Học kỳ B4")
-        db.session.add_all([s,c,sem]); db.session.flush(); db.session.add(Enrollment(student=s,course=c,semester=sem,current_week=4,score=6,attendance_rate=80,late_submissions=1)); db.session.commit(); course_id=c.id; semester_id=sem.id
+        db.session.add_all([s,c,sem]); db.session.flush(); db.session.add(Enrollment(student=s,course=c,semester=sem,current_week=4,score=6,attendance_rate=8,late_submissions=1)); db.session.commit(); course_id=c.id; semester_id=sem.id
     page=auth.get(f"/analysis?semester_id={semester_id}&course_id={course_id}&week=4")
     assert page.status_code==200 and "Hệ thống bắt đầu dự báo nguy cơ từ tuần 5" in page.text
     result=auth.post("/predict/batch",data={"semester_id":semester_id,"course_id":course_id,"week":4},follow_redirects=True)
@@ -355,13 +366,13 @@ def test_analysis_week_four_blocks_backend(app, auth):
 def test_batch_prediction_isolates_course_and_future_week(app, auth):
     with app.app_context():
         import pandas as pd
-        model=RandomForestClassifier(n_estimators=20,random_state=42).fit(pd.DataFrame([[2,55,5],[9,98,0]],columns=FEATURES),[1,0])
+        model=RandomForestClassifier(n_estimators=20,random_state=42).fit(pd.DataFrame([[2,5,5],[9,9,0]],columns=FEATURES),[1,0])
         joblib.dump({"model":model,"metadata":{"version":"scope-v1","features":FEATURES}},app.config["MODEL_PATH"])
         student=Student(student_code="SCOPE1",full_name="Nguyễn Hải An",class_name="C1"); c1=Course(code="SC1",name="Môn A"); c2=Course(code="SC2",name="Môn B"); sem=Semester(code="SCOPE",name="Học kỳ Scope")
         db.session.add_all([student,c1,c2,sem]); db.session.flush()
-        week7=Enrollment(student=student,course=c1,semester=sem,current_week=7,score=2,attendance_rate=55,late_submissions=5)
-        future=Enrollment(student=student,course=c1,semester=sem,current_week=8,score=9,attendance_rate=98,late_submissions=0)
-        other_course=Enrollment(student=student,course=c2,semester=sem,current_week=7,score=9,attendance_rate=98,late_submissions=0)
+        week7=Enrollment(student=student,course=c1,semester=sem,current_week=7,score=2,attendance_rate=5,late_submissions=5)
+        future=Enrollment(student=student,course=c1,semester=sem,current_week=8,score=9,attendance_rate=9,late_submissions=0)
+        other_course=Enrollment(student=student,course=c2,semester=sem,current_week=7,score=9,attendance_rate=9,late_submissions=0)
         db.session.add_all([week7,future,other_course]); db.session.commit(); course_id=c1.id; semester_id=sem.id; week7_id=week7.id
     for _ in range(3):
         response=auth.post("/predict/batch",data={"semester_id":semester_id,"course_id":course_id,"week":7},follow_redirects=True)

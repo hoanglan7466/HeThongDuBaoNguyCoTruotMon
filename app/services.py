@@ -24,7 +24,7 @@ Xác suất dự báo: 68%
 
 Một số chỉ số học tập:
 - Điểm hiện tại: 5.8
-- Tỷ lệ chuyên cần: 72%
+- Tỷ lệ điểm chuyên cần: 7.2/10
 - Số lần nộp bài trễ: 2
 
 Gợi ý:
@@ -64,7 +64,7 @@ def validate_csv(stream):
             raw["score"] = float(raw["score"]); raw["attendance_rate"] = float(raw["attendance_rate"])
             raw["late_submissions"] = int(raw["late_submissions"]); raw["current_week"] = int(raw["current_week"])
             if not 0 <= raw["score"] <= 10: err.append("Điểm phải từ 0 đến 10")
-            if not raw["attendance_rate"].is_integer() or not 1 <= raw["attendance_rate"] <= 10: err.append("Chuyên cần phải là số nguyên từ 1 đến 10")
+            if not raw["attendance_rate"].is_integer() or not 0 <= raw["attendance_rate"] <= 10: err.append("Chuyên cần phải là số từ 0 đến 10")
             if raw["late_submissions"] < 0: err.append("Số lần nộp trễ không âm")
             if not 1 <= raw["current_week"] <= 10: err.append("Tuần học phải nằm trong khoảng 1–10")
             key = (code, raw["course_code"].strip(), raw["semester_code"].strip(), raw["current_week"])

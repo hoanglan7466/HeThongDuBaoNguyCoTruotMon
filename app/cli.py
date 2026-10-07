@@ -33,6 +33,14 @@ def _upgrade_schema():
         if name not in batch_columns:
             db.session.execute(db.text(f"ALTER TABLE import_batch ADD COLUMN {name} {definition}")); changed=True
     if db.engine.dialect.name == "mysql":
+        attendance_checks=inspect(db.engine).get_check_constraints("enrollment")
+        attendance_check=next((item for item in attendance_checks if item.get("name")=="ck_enrollment_attendance"),None)
+        if attendance_check and "<= 100" in (attendance_check.get("sqltext") or ""):
+            max_attendance=db.session.execute(db.text("SELECT MAX(attendance_rate) FROM enrollment")).scalar()
+            if max_attendance is not None and float(max_attendance) > 10:
+                raise click.ClickException("Không thể hạ constraint attendance_rate: dữ liệu hiện có vượt quá 10.")
+            db.session.execute(db.text("ALTER TABLE enrollment DROP CHECK ck_enrollment_attendance"))
+            db.session.execute(db.text("ALTER TABLE enrollment ADD CONSTRAINT ck_enrollment_attendance CHECK (attendance_rate >= 0 AND attendance_rate <= 10)")); changed=True
         unique_constraints=inspect(db.engine).get_unique_constraints("enrollment")
         old=next((item for item in unique_constraints if set(item.get("column_names") or [])=={"student_id","course_id","semester_id"}),None)
         weekly=next((item for item in unique_constraints if set(item.get("column_names") or [])=={"student_id","course_id","semester_id","current_week"}),None)
