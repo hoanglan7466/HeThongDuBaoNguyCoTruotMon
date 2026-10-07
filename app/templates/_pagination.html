@@ -1,0 +1,8 @@
+{% macro page_size(per_page, page_sizes, query_args) -%}
+<form class="page-size-control" method="get"><span>Hiển thị</span>{% for key,value in query_args.items() %}{% if key!='per_page' %}<input type="hidden" name="{{key}}" value="{{value}}">{% endif %}{% endfor %}<select class="page-size-select" name="per_page" aria-label="Số dòng mỗi trang" data-page-size>{% for size in page_sizes %}<option value="{{size}}" {{'selected' if size==per_page}}>{{size}}</option>{% endfor %}</select><span>dòng</span></form>
+{%- endmacro %}
+
+{% macro controls(page, query_args, endpoint=None) -%}
+{% set target=endpoint or request.endpoint %}
+<div class="table-pagination">{% if page.pages > 1 %}<nav class="student-pagination" aria-label="Phân trang"><span>Hiển thị {{(page.page-1)*page.per_page+1}}–{{[page.page*page.per_page,page.total]|min}} / {{page.total}} bản ghi</span><div>{% if page.has_prev %}<a href="{{url_for(target,page=page.prev_num,**query_args)}}" aria-label="Trang trước"><i data-lucide="chevron-left"></i></a>{% endif %}{% for number in page.iter_pages(left_edge=1,right_edge=1,left_current=1,right_current=1) %}{% if number %}<a class="{{'active' if number==page.page}}" href="{{url_for(target,page=number,**query_args)}}">{{number}}</a>{% else %}<span aria-hidden="true">…</span>{% endif %}{% endfor %}{% if page.has_next %}<a href="{{url_for(target,page=page.next_num,**query_args)}}" aria-label="Trang sau"><i data-lucide="chevron-right"></i></a>{% endif %}</div></nav>{% else %}<div class="list-count">Hiển thị {{page.total}} / {{page.total}} bản ghi</div>{% endif %}</div>
+{%- endmacro %}

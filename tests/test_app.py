@@ -145,6 +145,60 @@ def test_pages_and_dashboard_api(auth):
     payload=auth.get("/api/dashboard").get_json()
     assert payload["ok"] and payload["data"]["students"]==0
 
+def test_page_size_validation_and_filter_preservation(app,auth):
+    with app.app_context():
+        db.session.add_all([Student(student_code=f"PAGE{i:03}",full_name=f"Trang {i}",class_name="C1") for i in range(25)])
+        db.session.commit()
+    valid=auth.get("/students?q=PAGE&per_page=10")
+    assert valid.status_code==200 and 'value="10" selected' in valid.text and 'q=PAGE' in valid.text and 'per_page=10' in valid.text
+    second=auth.get("/students?q=PAGE&per_page=10&page=2")
+    assert second.status_code==200 and "PAGE010" in second.text and "PAGE000" not in second.text
+    for value in ("999999","-1","abc"):
+        response=auth.get(f"/students?per_page={value}")
+        assert response.status_code==200 and 'value="20" selected' in response.text
+    assert auth.get("/reports?per_page=200").status_code==200
+
+def test_pagination_page_size_sequence_across_all_list_pages(auth):
+    paths=("/students","/academic-data","/analysis","/alerts","/reports","/data/import")
+    for path in paths:
+        for size in (20,50,100,200,10,20):
+            response=auth.get(f"{path}?per_page={size}&page=1")
+            assert response.status_code==200
+            if 'class="page-size-control"' in response.text:
+                assert f'value="{size}" selected' in response.text
+            assert "Đã xóa 0 sinh viên" not in response.text
+
+def test_filter_forms_preserve_page_size_and_reset_page(app,auth):
+    with app.app_context():
+        db.session.add(Student(student_code="PAGEFILTER",full_name="Filter Page",class_name="C1"))
+        db.session.commit()
+    cases=(
+        ("/students?q=PAGE&major=CNTT&per_page=100&page=1", "student-filters"),
+        ("/reports?q=PAGE&risk=CAO&per_page=100&page=1", "report-filters"),
+    )
+    for url, form_class in cases:
+        response=auth.get(url)
+        assert response.status_code==200
+        assert form_class in response.text, url
+        form_start=response.text.index(form_class)
+        form_end=response.text.index("</form>", form_start)
+        form=response.text[form_start:form_end]
+        assert 'name="per_page" value="100"' in form
+        assert 'name="page" value="1"' in form
+        assert 'value="100" selected' in response.text
+
+def test_student_page_size_never_submits_bulk_delete(app,auth):
+    with app.app_context():
+        db.session.add_all([Student(student_code=f"SAFE{i:03}",full_name=f"Safe {i}",class_name="C1") for i in range(25)])
+        db.session.commit(); before=Student.query.count()
+    for size in (10,20,50,100,200):
+        response=auth.get(f"/students?q=SAFE&per_page={size}")
+        assert response.status_code==200 and "Đã xóa 0 sinh viên" not in response.text
+        page_form=response.text.index('class="page-size-control"')
+        bulk_form=response.text.index('id="bulk-students"')
+        assert page_form < bulk_form
+        with app.app_context(): assert Student.query.count()==before
+
 def test_report_filter_and_export(app,auth,tmp_path):
     with app.app_context():
         import pandas as pd

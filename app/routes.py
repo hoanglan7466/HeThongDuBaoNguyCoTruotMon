@@ -14,6 +14,39 @@ from .services import DEMO_EMAIL_MESSAGE, DEMO_EMAIL_SUBJECT, REQUIRED_COLUMNS, 
 from .services import import_rows_batched
 
 bp=Blueprint("main",__name__)
+PAGE_SIZES=(10,20,50,100,200)
+
+def _page_size(default=20):
+    value=request.args.get("per_page",type=int)
+    return value if value in PAGE_SIZES else default
+
+def _page_number():
+    return max(request.args.get("page",1,type=int) or 1,1)
+
+def _pagination_args():
+    args=request.args.to_dict(flat=True); args.pop("page",None)
+    return args
+
+class _ListPage:
+    def __init__(self, items, page, per_page):
+        self.total=len(items); self.page=page; self.per_page=per_page
+        self.pages=max((self.total+per_page-1)//per_page,1)
+        self.page=min(page,self.pages); start=(self.page-1)*per_page
+        self.items=items[start:start+per_page]
+    @property
+    def has_prev(self): return self.page>1
+    @property
+    def has_next(self): return self.page<self.pages
+    @property
+    def prev_num(self): return self.page-1
+    @property
+    def next_num(self): return self.page+1
+    def iter_pages(self,left_edge=1,left_current=1,right_current=1,right_edge=1):
+        last=0
+        for number in range(1,self.pages+1):
+            if number<=left_edge or number>self.pages-right_edge or self.page-left_current<=number<=self.page+right_current:
+                if last+1!=number: yield None
+                yield number; last=number
 
 def _cohort_from_class(class_name):
     """Derive cohort K17 from a class label such as CNTT 17-12 or CNTT K17-12."""
@@ -161,18 +194,18 @@ def students():
         if course_id: q=q.filter(Enrollment.course_id==course_id)
         if semester_id: q=q.filter(Enrollment.semester_id==semester_id)
     order={"name":Student.full_name,"class":Student.class_name}.get(sort,Student.student_code)
-    page=q.distinct().order_by(order).paginate(page=request.args.get("page",1,type=int),per_page=15,error_out=False)
+    per_page=_page_size(); page=q.distinct().order_by(order).paginate(page=_page_number(),per_page=per_page,error_out=False)
     class_names=[r[0] for r in db.session.query(Student.class_name).distinct().order_by(Student.class_name)]
     classes=_class_options()
     majors=_major_options()
     cohorts=sorted({item["cohort"] for item in classes if item["cohort"]},reverse=True)
-    return render_template("students.html",page=page,total_students=Student.query.count(),term=term,class_name=class_name,major=major,cohort=cohort,course_id=course_id,semester_id=semester_id,sort=sort,classes=classes,majors=majors,cohorts=cohorts,courses=_course_filter_options(),semesters=Semester.query.order_by(Semester.code.desc()).all())
+    return render_template("students.html",page=page,per_page=per_page,page_sizes=PAGE_SIZES,pagination_args=_pagination_args(),total_students=Student.query.count(),term=term,class_name=class_name,major=major,cohort=cohort,course_id=course_id,semester_id=semester_id,sort=sort,classes=classes,majors=majors,cohorts=cohorts,courses=_course_filter_options(),semesters=Semester.query.order_by(Semester.code.desc()).all())
 
 @bp.get("/academic-data")
 @login_required
 def academic_data():
-    page=Enrollment.query.options(joinedload(Enrollment.student),joinedload(Enrollment.course),joinedload(Enrollment.semester)).order_by(Enrollment.id.desc()).paginate(page=request.args.get("page",1,type=int),per_page=20,error_out=False)
-    return render_template("academic_data.html",page=page)
+    per_page=_page_size(); page=Enrollment.query.options(joinedload(Enrollment.student),joinedload(Enrollment.course),joinedload(Enrollment.semester)).order_by(Enrollment.id.desc()).paginate(page=_page_number(),per_page=per_page,error_out=False)
+    return render_template("academic_data.html",page=page,per_page=per_page,page_sizes=PAGE_SIZES,pagination_args=_pagination_args())
 
 @bp.get("/analysis")
 @login_required
@@ -201,19 +234,21 @@ def analysis():
     if course_id: query=query.filter(Enrollment.course_id==course_id)
     if week is not None: query=query.filter(Enrollment.current_week==week)
     if term: query=query.join(Student).filter(db.or_(Student.student_code.contains(term),Student.full_name.contains(term)))
-    enrollments=query.all(); rows=[]; counts={"CAO":0,"TRUNG_BINH":0,"ON_DINH":0}
-    for enrollment in enrollments:
+    all_enrollments=query.all(); rows=[]; counts={"CAO":0,"TRUNG_BINH":0,"ON_DINH":0}
+    for enrollment in all_enrollments:
         latest=max(enrollment.predictions,key=lambda p:(p.created_at,p.id),default=None)
         if latest: counts[latest.risk_level]+=1
         rows.append({"enrollment":enrollment,"prediction":latest})
     rank={"CAO":0,"TRUNG_BINH":1,"ON_DINH":2}
     rows.sort(key=lambda row:(rank.get(row["prediction"].risk_level,3) if row["prediction"] else 3,-(row["prediction"].probability if row["prediction"] else -1),row["enrollment"].student.student_code))
+    per_page=_page_size()
+    page=_ListPage(rows,_page_number(),per_page)
     class_names=[value for value, in db.session.query(Student.class_name).distinct().order_by(Student.class_name)]
     classes=_class_options()
     majors=_major_options()
     cohorts=sorted({item["cohort"] for item in classes if item["cohort"]},reverse=True)
     course_options=_course_filter_options()
-    return render_template("analysis.html",rows=rows,counts=counts,total=len({e.student_id for e in enrollments}),has_data=Enrollment.query.count()>0,semesters=semesters,courses=course_options,available_weeks=available_weeks,semester_id=semester_id,course_id=course_id,week=week,term=term,classes=classes,majors=majors,cohorts=cohorts,major=major,cohort=cohort,class_name=class_name)
+    return render_template("analysis.html",rows=page.items,page=page,per_page=per_page,page_sizes=PAGE_SIZES,pagination_args=_pagination_args(),counts=counts,total=len({e.student_id for e in all_enrollments}),has_data=Enrollment.query.count()>0,semesters=semesters,courses=course_options,available_weeks=available_weeks,semester_id=semester_id,course_id=course_id,week=week,term=term,classes=classes,majors=majors,cohorts=cohorts,major=major,cohort=cohort,class_name=class_name)
 
 @bp.get("/students/<int:student_id>")
 @login_required
@@ -279,7 +314,8 @@ def import_data():
     summary={"students":Student.query.count(),"courses":Course.query.count(),"records":Enrollment.query.count(),"latest":ImportBatch.query.order_by(ImportBatch.imported_at.desc()).first()}
     demo_file=Path(current_app.root_path).parent/"demo_data"/"du_lieu_sinh_vien_demo.csv"
     demo_rows,demo_errors=validate_csv(demo_file.open("rb")) if demo_file.exists() else ([],[{"message":"Không tìm thấy dữ liệu demo."}])
-    return render_template("import.html",preview=preview[:15],preview_summary=_import_summary(preview) if preview else None,preview_filename=filename,errors=errors[:20],error_count=len(errors),demo_count=Student.query.filter_by(is_demo=True).count(),demo_summary=_import_summary(demo_rows) if not demo_errors else None,batches=ImportBatch.query.order_by(ImportBatch.imported_at.desc()).all(),summary=summary)
+    per_page=_page_size(); batch_page=ImportBatch.query.options(joinedload(ImportBatch.user)).order_by(ImportBatch.imported_at.desc()).paginate(page=_page_number(),per_page=per_page,error_out=False)
+    return render_template("import.html",preview=preview[:15],preview_summary=_import_summary(preview) if preview else None,preview_filename=filename,errors=errors[:20],error_count=len(errors),demo_count=Student.query.filter_by(is_demo=True).count(),demo_summary=_import_summary(demo_rows) if not demo_errors else None,batches=batch_page.items,page=batch_page,per_page=per_page,page_sizes=PAGE_SIZES,pagination_args=_pagination_args(),summary=summary)
 
 @bp.post("/data/import/confirm")
 @admin_required
@@ -405,7 +441,8 @@ def alerts():
     status=request.args.get("status","")
     query=Alert.query.options(joinedload(Alert.enrollment).joinedload(Enrollment.student),joinedload(Alert.enrollment).joinedload(Enrollment.course))
     if status in {"MOI","DA_XEM","DA_XU_LY"}: query=query.filter(Alert.status==status)
-    return render_template("alerts.html",alerts=query.order_by(Alert.created_at.desc()).all(),status=status)
+    per_page=_page_size(); page=query.order_by(Alert.created_at.desc()).paginate(page=_page_number(),per_page=per_page,error_out=False)
+    return render_template("alerts.html",alerts=page.items,page=page,per_page=per_page,page_sizes=PAGE_SIZES,pagination_args=_pagination_args(),status=status)
 
 @bp.post("/alerts/<int:alert_id>/status")
 @login_required
@@ -469,7 +506,8 @@ def reports():
     query,level,term,course_id,semester_id,major,cohort,class_name=_report_query()
     classes=_class_options()
     cohorts=sorted({item["cohort"] for item in classes if item["cohort"]},reverse=True)
-    return render_template("reports.html",predictions=query.all(),risk=level,term=term,course_id=course_id,semester_id=semester_id,major=major,cohort=cohort,class_name=class_name,classes=classes,majors=_major_options(),cohorts=cohorts,courses=Course.query.order_by(Course.code).all(),semesters=Semester.query.order_by(Semester.code.desc()).all())
+    per_page=_page_size(); page=query.options(joinedload(Prediction.enrollment).joinedload(Enrollment.student),joinedload(Prediction.enrollment).joinedload(Enrollment.course),joinedload(Prediction.enrollment).joinedload(Enrollment.semester)).paginate(page=_page_number(),per_page=per_page,error_out=False)
+    return render_template("reports.html",predictions=page.items,page=page,per_page=per_page,page_sizes=PAGE_SIZES,pagination_args=_pagination_args(),risk=level,term=term,course_id=course_id,semester_id=semester_id,major=major,cohort=cohort,class_name=class_name,classes=classes,majors=_major_options(),cohorts=cohorts,courses=Course.query.order_by(Course.code).all(),semesters=Semester.query.order_by(Semester.code.desc()).all())
 
 @bp.get("/reports/export.csv")
 @login_required
