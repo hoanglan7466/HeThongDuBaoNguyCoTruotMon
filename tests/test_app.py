@@ -326,11 +326,13 @@ def test_demo_seed_creates_complete_demo_flow(app,auth):
         model=RandomForestClassifier(n_estimators=30,random_state=42).fit(x,y)
         joblib.dump({"model":model,"metadata":{"version":"demo-flow-v1","features":FEATURES}},app.config["MODEL_PATH"])
     response=auth.post("/data/seed-demo",follow_redirects=True)
-    assert response.status_code==200 and "DỮ LIỆU DEMO" in response.text
+    assert response.status_code==200 and "DỮ LIỆU DEMO" in response.text and "Đã dự báo 26" in response.text
     with app.app_context():
         assert Student.query.filter_by(is_demo=True).count()==30
-        assert Prediction.query.count()==26 and Recommendation.query.count()>=26
-        assert Alert.query.count()>0 and EmailLog.query.filter_by(status="SKIPPED").count()==Alert.query.count()
+        assert Prediction.query.count()==26 and Recommendation.query.count()>0
+        assert Prediction.query.join(Enrollment).filter(Enrollment.current_week<5).count()==0
+        assert Alert.query.count()==Prediction.query.filter_by(risk_level="CAO").count()
+        assert EmailLog.query.count()==0
         weeks={value[0] for value in db.session.query(Enrollment.current_week).all()}
         assert {1,2,3,4,5,6} <= weeks
     assert auth.get("/analysis").status_code==200
@@ -630,7 +632,7 @@ def test_batch_prediction_isolates_course_and_future_week(app, auth):
         db.session.add_all([week7,future,other_course]); db.session.commit(); course_id=c1.id; semester_id=sem.id; week7_id=week7.id
     for _ in range(3):
         response=auth.post("/predict/batch",data={"semester_id":semester_id,"course_id":course_id,"week":7},follow_redirects=True)
-        assert response.status_code==200 and "Đã hoàn thành dự báo cho 1 sinh viên" in response.text
+        assert response.status_code==200 and "Đã hoàn thành dự báo cho 1 enrollment" in response.text
     with app.app_context():
         prediction=Prediction.query.one()
         assert prediction.enrollment_id==week7_id and prediction.week_number==7 and prediction.probability>=0
@@ -653,3 +655,193 @@ def test_role_avatars_and_student_empty_states(app, client, auth):
     assert 'Thêm sinh viên' not in advisor_page.text and 'row-menu-trigger' not in advisor_page.text
     no_match=client.get('/students?q=KHONGTONTAI')
     assert 'Không tìm thấy sinh viên phù hợp.' in no_match.text and 'Đặt lại bộ lọc' in no_match.text
+
+def test_analysis_normalizes_stale_dependent_filters_and_uses_real_weeks(app, auth):
+    with app.app_context():
+        cntt=Major(code='CNTT',name='Công nghệ thông tin')
+        qt=Major(code='QTKD',name='Quản trị kinh doanh')
+        sem=Semester(code='HK-AN',name='Học kỳ phân tích',is_current=True)
+        cs=Course(code='CS101',name='Cơ sở dữ liệu')
+        ml=Course(code='ML201',name='Học máy')
+        a=Student(student_code='AN-CNTT',full_name='An CNTT',class_name='CNTT 20-01',major=cntt)
+        b=Student(student_code='AN-QT',full_name='An QTKD',class_name='QTKD 20-01',major=qt)
+        db.session.add_all([cntt,qt,sem,cs,ml,a,b]); db.session.flush()
+        db.session.add_all([
+            Enrollment(student=a,course=cs,semester=sem,current_week=5,score=6,attendance_rate=8,late_submissions=0),
+            Enrollment(student=b,course=ml,semester=sem,current_week=9,score=7,attendance_rate=9,late_submissions=0),
+        ]); db.session.commit(); sem_id=sem.id; cs_id=cs.id; ml_id=ml.id
+        before=(Prediction.query.count(),Alert.query.count(),EmailLog.query.count())
+    page=auth.get(f'/analysis?semester_id={sem_id}&cohort=K20&major=CNTT&class_name=CNTT+20-01&course_id={ml_id}&week=9')
+    assert page.status_code==200
+    assert '<option value="" selected>Tất cả môn học</option>' in page.text
+    assert 'Tuần 5</option>' in page.text and 'Tuần 9</option>' not in page.text
+    with app.app_context():
+        assert (Prediction.query.count(),Alert.query.count(),EmailLog.query.count())==before
+
+def test_analysis_batch_honors_student_search_and_selected_snapshot(app, auth):
+    with app.app_context():
+        import pandas as pd
+        model=RandomForestClassifier(n_estimators=10,random_state=42).fit(pd.DataFrame([[2,5,5],[9,9,0]],columns=FEATURES),[1,0])
+        joblib.dump({'model':model,'metadata':{'version':'analysis-filter-v1','features':FEATURES}},app.config['MODEL_PATH'])
+        sem=Semester(code='HK-Q',name='Học kỳ query'); course=Course(code='Q1',name='Môn query')
+        one=Student(student_code='FILTER-ONE',full_name='Một',class_name='CNTT 20-01')
+        two=Student(student_code='FILTER-TWO',full_name='Hai',class_name='CNTT 20-01')
+        db.session.add_all([sem,course,one,two]); db.session.flush()
+        db.session.add_all([
+            Enrollment(student=one,course=course,semester=sem,current_week=6,score=2,attendance_rate=5,late_submissions=4),
+            Enrollment(student=two,course=course,semester=sem,current_week=6,score=9,attendance_rate=9,late_submissions=0),
+        ]); db.session.commit(); sem_id=sem.id; course_id=course.id
+    response=auth.post('/predict/batch',data={'semester_id':sem_id,'course_id':course_id,'week':6,'q':'FILTER-ONE'},follow_redirects=True)
+    assert response.status_code==200 and 'Đã hoàn thành dự báo cho 1 enrollment' in response.text
+    with app.app_context():
+        prediction=Prediction.query.one()
+        assert prediction.enrollment.student.student_code=='FILTER-ONE' and prediction.week_number==6
+
+def test_analysis_all_courses_is_default_and_batch_does_not_send_email(app, auth, monkeypatch):
+    import smtplib
+    captured=[]
+    class FakeSMTP:
+        def __init__(self,*args,**kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self,*args): return False
+        def starttls(self): pass
+        def login(self,*args): pass
+        def send_message(self,message): captured.append(message)
+    with app.app_context():
+        import pandas as pd
+        model=RandomForestClassifier(n_estimators=10,random_state=42).fit(pd.DataFrame([[2,5,5],[9,9,0]],columns=FEATURES),[1,0])
+        joblib.dump({'model':model,'metadata':{'version':'all-courses-v1','features':FEATURES}},app.config['MODEL_PATH'])
+        sem=Semester(code='HK-ALL',name='Học kỳ tất cả'); one=Course(code='ALL1',name='Môn một'); two=Course(code='ALL2',name='Môn hai')
+        student=Student(student_code='ALL-STUDENT',full_name='Học nhiều môn',class_name='CNTT 20-01',email='all@example.com')
+        db.session.add_all([sem,one,two,student]); db.session.flush()
+        db.session.add_all([
+            Enrollment(student=student,course=one,semester=sem,current_week=6,score=2,attendance_rate=5,late_submissions=4),
+            Enrollment(student=student,course=two,semester=sem,current_week=6,score=9,attendance_rate=9,late_submissions=0),
+        ]); db.session.commit(); sem_id=sem.id
+        app.config.update(MAIL_MODE='smtp',SMTP_HOST='smtp.example.com',SMTP_USERNAME='test@example.com',SMTP_PASSWORD='secret',SMTP_FROM='test@example.com')
+    monkeypatch.setattr(smtplib,'SMTP',FakeSMTP)
+    page=auth.get(f'/analysis?semester_id={sem_id}&week=6')
+    assert page.status_code==200 and 'Tất cả môn học' in page.text and '2 enrollment trong phạm vi' in page.text
+    result=auth.post('/predict/batch',data={'semester_id':sem_id,'week':6},follow_redirects=True)
+    assert result.status_code==200 and 'Đã hoàn thành dự báo cho 2 enrollment (1 sinh viên' in result.text
+    assert not captured
+    with app.app_context():
+        assert Prediction.query.count()==2
+        assert db.session.query(Prediction.enrollment_id).distinct().count()==2
+
+def test_empty_dashboard_onboarding_does_not_seed_on_startup_or_recreate(app, auth):
+    with app.app_context():
+        assert Student.query.count()==0 and Enrollment.query.count()==0
+    page=auth.get('/')
+    assert page.status_code==200
+    assert 'Bắt đầu sử dụng hệ thống' in page.text
+    assert 'Trải nghiệm với dữ liệu mẫu' in page.text and 'TẢI DỮ LIỆU HỌC TẬP' in page.text
+    assert 'dashboard-onboarding' in page.text and 'action="/data/import/dashboard"' in page.text
+    assert 'data-open-dialog="dashboard-demo-dialog"' in page.text and '.showModal()' in page.text
+    with app.app_context():
+        assert Student.query.count()==0 and Enrollment.query.count()==0 and ImportBatch.query.count()==0
+
+def test_dashboard_onboarding_when_students_exist_without_academic_data_blocks_demo(app, auth):
+    with app.app_context():
+        db.session.add(Student(student_code='ONLY-STUDENT',full_name='Chỉ sinh viên',class_name='C1')); db.session.commit()
+    page=auth.get('/')
+    assert page.status_code==200 and 'DEMO chỉ được khởi tạo trên database trống' in page.text
+    assert 'data-open-dialog="dashboard-demo-dialog"' not in page.text
+    result=auth.post('/data/seed-demo',follow_redirects=True)
+    assert 'Dữ liệu demo đã tồn tại hoặc database đã có dữ liệu' in result.text
+    with app.app_context():
+        assert Student.query.count()==1 and Enrollment.query.count()==0 and ImportBatch.query.count()==0
+
+def test_dashboard_with_enrollment_is_not_onboarding_even_without_prediction(app, auth):
+    with app.app_context():
+        student=Student(student_code='HAS-ENROLL',full_name='Có dữ liệu',class_name='C1'); course=Course(code='HAS',name='Môn'); semester=Semester(code='HAS',name='Học kỳ')
+        db.session.add_all([student,course,semester]); db.session.flush()
+        db.session.add(Enrollment(student=student,course=course,semester=semester,current_week=5,score=6,attendance_rate=8,late_submissions=0)); db.session.commit()
+    page=auth.get('/')
+    assert page.status_code==200 and 'Bắt đầu sử dụng hệ thống' not in page.text
+    with app.app_context(): assert Prediction.query.count()==0 and Student.query.count()==1
+
+def test_dashboard_inline_upload_uses_preview_then_existing_import_confirm(app, auth):
+    content=_csv('INLINE1,Nhập trực tiếp,CNTT 20-01,,CS101,Cơ sở dữ liệu,HKINLINE,Học kỳ inline,5,7,8,0')
+    preview=auth.post('/data/import/dashboard',data={'file':(content,'inline.csv')},content_type='multipart/form-data',follow_redirects=True)
+    assert preview.status_code==200 and 'Sẵn sàng nhập dữ liệu' in preview.text and 'inline.csv' in preview.text
+    completed=auth.post('/data/import/confirm',follow_redirects=True)
+    assert completed.status_code==200 and 'Bắt đầu sử dụng hệ thống' not in completed.text
+    with app.app_context(): assert Enrollment.query.count()==1 and ImportBatch.query.count()==1
+
+def test_dashboard_header_has_single_title_and_product_subtitle(app, auth):
+    page=auth.get('/')
+    assert page.text.count('Hệ thống phân tích kết quả học tập và dự báo nguy cơ trượt môn')==1
+    assert 'Theo dõi kết quả học tập • Phân tích dữ liệu • Cảnh báo sớm' in page.text
+
+def test_dashboard_blocks_demo_when_only_import_history_exists(app, auth):
+    with app.app_context():
+        admin=User.query.filter_by(username='admin').one()
+        db.session.add(ImportBatch(batch_id='history-only',filename='old.csv',data_type='USER',imported_by=admin.id,record_count=0,success_count=0,failed_count=0))
+        db.session.commit()
+    page=auth.get('/')
+    assert 'DEMO chỉ được khởi tạo trên database trống' in page.text
+    assert 'data-open-dialog="dashboard-demo-dialog"' not in page.text
+
+def test_seed_demo_rejects_invalid_csrf(app, client):
+    import re
+    app.config['WTF_CSRF_ENABLED']=True
+    login=client.get('/login')
+    token=re.search(r'name="csrf_token" value="([^"]+)"',login.text).group(1)
+    assert client.post('/login',data={'username':'admin','password':'StrongPass123!','csrf_token':token}).status_code==302
+    assert client.post('/data/seed-demo').status_code==400
+    with app.app_context():
+        assert Student.query.count()==0 and Enrollment.query.count()==0 and ImportBatch.query.count()==0
+
+def test_seed_demo_accepts_valid_csrf_on_empty_database(app, client):
+    import re
+    app.config['WTF_CSRF_ENABLED']=True
+    login=client.get('/login')
+    login_token=re.search(r'name="csrf_token" value="([^"]+)"',login.text).group(1)
+    assert client.post('/login',data={'username':'admin','password':'StrongPass123!','csrf_token':login_token}).status_code==302
+    dashboard=client.get('/')
+    assert 'data-open-dialog="dashboard-demo-dialog"' in dashboard.text
+    token=re.search(r'name="csrf_token" value="([^"]+)"',dashboard.text).group(1)
+    response=client.post('/data/seed-demo',data={'csrf_token':token},follow_redirects=True)
+    assert response.status_code==200 and 'Đã tải 30 bản ghi DEMO' in response.text
+    with app.app_context():
+        assert Student.query.count()==30 and Enrollment.query.count()>0 and ImportBatch.query.count()==1
+
+def test_dashboard_import_preview_does_not_predict_before_confirmation(app, auth):
+    content=_csv('PREVIEW1,Xem trước,CNTT 20-01,,CS101,Cơ sở dữ liệu,HKPRE,Học kỳ preview,5,2,5,4')
+    response=auth.post('/data/import/dashboard',data={'file':(content,'preview.csv')},content_type='multipart/form-data',follow_redirects=True)
+    assert response.status_code==200 and 'Sẵn sàng nhập dữ liệu' in response.text
+    with app.app_context():
+        assert Enrollment.query.count()==0 and Prediction.query.count()==0
+
+def test_confirmed_import_runs_prediction_for_new_eligible_records_without_smtp(app, auth, monkeypatch):
+    import pandas as pd
+    import smtplib
+    class NoSMTP:
+        def __init__(self,*args,**kwargs): raise AssertionError('SMTP must not be used during direct import')
+    with app.app_context():
+        model=RandomForestClassifier(n_estimators=10,random_state=42).fit(pd.DataFrame([[2,5,4],[9,10,0]],columns=FEATURES),[1,0])
+        joblib.dump({'model':model,'metadata':{'version':'import-predict-v1','features':FEATURES}},app.config['MODEL_PATH'])
+    monkeypatch.setattr(smtplib,'SMTP',NoSMTP)
+    content=_csv('AUTO1,Tự dự báo,CNTT 20-01,auto@example.com,CS101,Cơ sở dữ liệu,HKAUTO,Học kỳ auto,5,2,5,4')
+    auth.post('/data/import/dashboard',data={'file':(content,'auto.csv')},content_type='multipart/form-data',follow_redirects=True)
+    response=auth.post('/data/import/confirm',follow_redirects=True)
+    assert response.status_code==200 and 'Đã dự báo 1' in response.text and 'Không gửi email tự động' in response.text
+    with app.app_context():
+        assert Enrollment.query.count()==1 and Prediction.query.count()==1 and Alert.query.count()==1 and EmailLog.query.count()==0
+
+def test_confirmed_import_skips_weeks_before_five(app, auth):
+    content=_csv('EARLY1,Tuần sớm,CNTT 20-01,,CS101,Cơ sở dữ liệu,HKEARLY,Học kỳ sớm,4,2,5,4')
+    auth.post('/data/import/dashboard',data={'file':(content,'early.csv')},content_type='multipart/form-data',follow_redirects=True)
+    response=auth.post('/data/import/confirm',follow_redirects=True)
+    assert response.status_code==200 and 'Đã dự báo 0; bỏ qua 1' in response.text
+    with app.app_context():
+        assert Enrollment.query.count()==1 and Prediction.query.count()==0
+
+def test_import_is_retained_when_prediction_model_fails(app, auth):
+    content=_csv('KEEP1,Giữ import,CNTT 20-01,,CS101,Cơ sở dữ liệu,HKKEEP,Học kỳ giữ,5,2,5,4')
+    auth.post('/data/import/dashboard',data={'file':(content,'keep.csv')},content_type='multipart/form-data',follow_redirects=True)
+    response=auth.post('/data/import/confirm',follow_redirects=True)
+    assert response.status_code==200 and 'lỗi 1' in response.text
+    with app.app_context():
+        assert Enrollment.query.count()==1 and ImportBatch.query.count()==1 and Prediction.query.count()==0

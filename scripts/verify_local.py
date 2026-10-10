@@ -77,15 +77,11 @@ def main():
         status, body, url = request("/login", {"username": username, "password": password, "csrf_token": token(login_page)})
         assert status == 200 and url == BASE + "/", "Login failed"
         if username == "admin":
-            assert request("/data/seed-demo", {"csrf_token": token(body)})[0] == 200
-            # A fresh development database has no prediction snapshot until
-            # the DEMO dataset is seeded above.
-            if prediction_scope is None:
-                prediction_scope = preflight()
-                assert prediction_scope, "No week 5+ snapshot is available after seeding DEMO data"
-            analysis_body = request("/analysis")[1]
-            status, body, _ = request("/predict/batch", {"csrf_token": token(analysis_body), **prediction_scope})
-            assert status == 200 and "Đã hoàn thành dự báo cho" in body
+            # Verification is read-only with respect to academic data. DEMO
+            # import and prediction are explicit ADMIN actions in the browser,
+            # never side effects of this script.
+            if not prediction_scope:
+                print("No week 5+ snapshot; prediction scope check skipped (database is empty).")
         for path in ("/", "/students", "/students?q=DEMO001", "/students?page=2", "/academic-data", "/analysis", "/alerts", "/reports", "/reports/export.csv", "/model", "/data/template.csv", "/static/css/app.css"):
             assert request(path)[0] == 200, path
         for path in ("/data/import", "/admin/users", "/settings"):
@@ -96,10 +92,10 @@ def main():
         assert request("/missing-page")[0] == 404
         assert request("/students/99999999")[0] == 404
         body = request("/analysis")[1]
-        status, body, _ = request("/predict/batch", {"csrf_token": token(body), **prediction_scope})
-        assert status == 200 and "Đã hoàn thành dự báo cho" in body, "Prediction failed"
+        if prediction_scope:
+            assert request("/analysis?" + urlencode(prediction_scope))[0] == 200
         stats = json.loads(request("/api/dashboard")[1])["data"]
-        print(username, "pages/login/CSRF/prediction OK", json.dumps(stats))
+        print(username, "pages/login/CSRF/read-only scope OK", json.dumps(stats))
         assert request("/logout", {"csrf_token": token(body)})[2].endswith("/login")
         assert request("/")[2].split("?", 1)[0].endswith("/login")
     print("Live HTTP verification passed")

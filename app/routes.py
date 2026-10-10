@@ -9,7 +9,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from werkzeug.utils import secure_filename
 from .extensions import db
 from .models import Alert, AuditLog, Course, EmailLog, Enrollment, ImportBatch, Major, ModelVersion, Prediction, Recommendation, Semester, Student, SystemSetting, User
-from .services import REQUIRED_COLUMNS, automation_status, delete_enrollments, delete_students, import_rows, model_bundle, predict_enrollment, render_demo_risk_alert_email, run_auto_pipeline, send_demo_email, send_email, set_setting, setting_bool, valid_email, validate_csv, smtp_configured
+from .services import REQUIRED_COLUMNS, automation_status, delete_enrollments, delete_students, import_rows, model_bundle, predict_enrollment, render_demo_risk_alert_email, run_auto_pipeline, run_import_prediction_pipeline, send_demo_email, send_email, set_setting, setting_bool, valid_email, validate_csv, smtp_configured
 
 from .services import import_rows_batched
 
@@ -74,6 +74,91 @@ def _course_filter_options():
         options.append({"id":course.id,"code":course.code,"name":course.name,"majors":sorted({student.major.code for student in students if student.major}),"cohorts":sorted({_cohort_from_class(student.class_name) for student in students if _cohort_from_class(student.class_name)}),"classes":sorted({student.class_name for student in students})})
     return options
 
+def _value_as_int(values, key):
+    try:
+        value=values.get(key)
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+def _scope_class_names(scope):
+    return [value for value, in scope.with_entities(Student.class_name).distinct().order_by(Student.class_name)]
+
+def _scope_major_options(scope):
+    return [
+        {"id":row.id,"code":row.code,"name":row.name}
+        for row in scope.join(Major, Student.major_id==Major.id).with_entities(Major).distinct().order_by(Major.code)
+    ]
+
+def _scope_course_options(scope):
+    return [
+        {"id":row.id,"code":row.code,"name":row.name}
+        for row in scope.join(Course, Enrollment.course_id==Course.id).with_entities(Course).distinct().order_by(Course.code)
+    ]
+
+def _analysis_filter_state(values):
+    """Normalize dependent Analysis filters using only enrollments that exist.
+
+    Enrollment is the application's academic snapshot: one row contains the
+    inputs for exactly ``current_week``.  We therefore never substitute a
+    later snapshot for the requested week.
+    """
+    semesters=Semester.query.join(Enrollment).distinct().order_by(Semester.is_current.desc(),Semester.code.desc()).all()
+    semester_ids={item.id for item in semesters}
+    semester_id=_value_as_int(values,"semester_id")
+    if semester_id not in semester_ids:
+        semester_id=semesters[0].id if semesters else None
+
+    scope=Enrollment.query.join(Student)
+    if semester_id:
+        scope=scope.filter(Enrollment.semester_id==semester_id)
+
+    class_names=_scope_class_names(scope)
+    cohorts=sorted({_cohort_from_class(value) for value in class_names if _cohort_from_class(value)},reverse=True)
+    cohort=(values.get("cohort") or "").strip()
+    if cohort not in cohorts:
+        cohort=""
+    if cohort:
+        cohort_classes=[value for value in class_names if _cohort_from_class(value)==cohort]
+        scope=scope.filter(Student.class_name.in_(cohort_classes))
+
+    major_options=_scope_major_options(scope)
+    major_codes={item["code"] for item in major_options}
+    major=(values.get("major") or "").strip()
+    if major not in major_codes:
+        major=""
+    if major:
+        scope=_filter_major(scope,major)
+
+    class_names=_scope_class_names(scope)
+    class_name=(values.get("class_name") or "").strip()
+    if class_name not in class_names:
+        class_name=""
+    if class_name:
+        scope=scope.filter(Student.class_name==class_name)
+
+    courses=_scope_course_options(scope)
+    course_ids={item["id"] for item in courses}
+    course_id=_value_as_int(values,"course_id")
+    if course_id not in course_ids:
+        # An empty value means "all courses".  Do not silently narrow a
+        # broad analysis to the first course available in the database.
+        course_id=None
+    if course_id:
+        scope=scope.filter(Enrollment.course_id==course_id)
+
+    available_weeks=[value for value, in scope.with_entities(Enrollment.current_week).distinct().order_by(Enrollment.current_week)]
+    week=_value_as_int(values,"week")
+    if week not in available_weeks:
+        week=max(available_weeks,default=None)
+
+    return {
+        "scope":scope,"semesters":semesters,"semester_id":semester_id,
+        "cohorts":cohorts,"cohort":cohort,"majors":major_options,"major":major,
+        "classes":class_names,"class_name":class_name,"courses":courses,"course_id":course_id,
+        "available_weeks":available_weeks,"week":week,
+    }
+
 def _dashboard_scope():
     semester_id=request.args.get("semester_id",type=int); course_id=request.args.get("course_id",type=int)
     major=request.args.get("major","").strip(); cohort=request.args.get("cohort","").strip(); class_name=request.args.get("class_name","").strip()
@@ -103,6 +188,12 @@ def _pop_preview():
     try: return json.loads(path.read_text(encoding="utf-8"))
     except (OSError,ValueError): return None
     finally: path.unlink(missing_ok=True)
+
+def _peek_preview():
+    token=session.get("import_preview_token")
+    if not token: return None
+    try: return json.loads(_preview_path(token).read_text(encoding="utf-8"))
+    except (OSError,ValueError): return None
 
 def _import_summary(rows):
     return {
@@ -177,7 +268,16 @@ def dashboard():
     majors=_major_options()
     cohorts=sorted({_cohort_from_class(value) for value in classes if _cohort_from_class(value)},reverse=True)
     class_options=_class_options()
-    return render_template("dashboard.html",total=total,counts=counts,attention=attention,alerts=alerts_query.options(joinedload(Alert.enrollment).joinedload(Enrollment.student),joinedload(Alert.enrollment).joinedload(Enrollment.course)).order_by(Alert.created_at.desc()).limit(5).all(),is_demo=is_demo,semester=semester,weekly=weekly,attendance_by_course=attendance_by_course,activities=activities,active_model=active_model,model_ready=model_ready,email_status="ĐÃ CẤU HÌNH" if smtp_configured() else "DEV MODE",courses=_course_filter_options(),semesters=Semester.query.order_by(Semester.code.desc()).all(),classes=class_options,majors=majors,cohorts=cohorts,course_id=course_id,semester_id=semester_id,major=major,cohort=cohort,class_name=class_name)
+    has_students=Student.query.first() is not None
+    has_enrollments=Enrollment.query.first() is not None
+    has_import_batches=ImportBatch.query.first() is not None
+    can_seed_demo=not (has_students or has_enrollments or has_import_batches)
+    demo_seed_block_reason=(
+        "Database đã có dữ liệu học tập hoặc lịch sử import. DEMO chỉ được khởi tạo trên database trống để tránh trộn dữ liệu thật."
+        if not can_seed_demo else None
+    )
+    dashboard_preview=_peek_preview() if not has_enrollments else None
+    return render_template("dashboard.html",total=total,counts=counts,attention=attention,alerts=alerts_query.options(joinedload(Alert.enrollment).joinedload(Enrollment.student),joinedload(Alert.enrollment).joinedload(Enrollment.course)).order_by(Alert.created_at.desc()).limit(5).all(),is_demo=is_demo,onboarding=not has_enrollments,has_students=has_students,can_seed_demo=can_seed_demo,demo_seed_block_reason=demo_seed_block_reason,dashboard_preview=dashboard_preview,semester=semester,weekly=weekly,attendance_by_course=attendance_by_course,activities=activities,active_model=active_model,model_ready=model_ready,email_status="ĐÃ CẤU HÌNH" if smtp_configured() else "DEV MODE",courses=_course_filter_options(),semesters=Semester.query.order_by(Semester.code.desc()).all(),classes=class_options,majors=majors,cohorts=cohorts,course_id=course_id,semester_id=semester_id,major=major,cohort=cohort,class_name=class_name)
 
 @bp.get("/students")
 @login_required
@@ -210,45 +310,24 @@ def academic_data():
 @bp.get("/analysis")
 @login_required
 def analysis():
-    semesters=Semester.query.order_by(Semester.is_current.desc(),Semester.code.desc()).all()
-    semester_id=request.args.get("semester_id",type=int) or (semesters[0].id if semesters else None)
-    major=request.args.get("major","").strip(); cohort=request.args.get("cohort","").strip(); class_name=request.args.get("class_name","").strip()
-    scope=Enrollment.query.join(Student)
-    if semester_id: scope=scope.filter(Enrollment.semester_id==semester_id)
-    if class_name: scope=scope.filter(Student.class_name==class_name)
-    scope=_filter_major(scope,major)
-    if cohort:
-        cohort_classes=[value for value, in db.session.query(Student.class_name).distinct() if _cohort_from_class(value)==cohort]
-        scope=scope.filter(Student.class_name.in_(cohort_classes) if cohort_classes else db.false())
-    scoped_ids=[row[0] for row in scope.with_entities(Enrollment.id).all()]
-    course_query=Course.query.join(Enrollment).filter(Enrollment.id.in_(scoped_ids)) if scoped_ids else Course.query.filter(db.false())
-    courses=course_query.distinct().order_by(Course.code).all()
-    course_id=request.args.get("course_id",type=int) or (courses[0].id if courses else None)
-    available_weeks_query=db.session.query(Enrollment.current_week).filter(Enrollment.id.in_(scoped_ids)) if scoped_ids else db.session.query(Enrollment.current_week).filter(db.false())
-    if course_id: available_weeks_query=available_weeks_query.filter(Enrollment.course_id==course_id)
-    available_weeks=sorted({row[0] for row in available_weeks_query.all()})
-    week=request.args.get("week",type=int)
-    if week is None: week=max(available_weeks,default=None)
+    filters=_analysis_filter_state(request.args)
     term=request.args.get("q","").strip()
-    query=scope.options(joinedload(Enrollment.student),joinedload(Enrollment.course),joinedload(Enrollment.semester),selectinload(Enrollment.predictions))
-    if course_id: query=query.filter(Enrollment.course_id==course_id)
-    if week is not None: query=query.filter(Enrollment.current_week==week)
-    if term: query=query.join(Student).filter(db.or_(Student.student_code.contains(term),Student.full_name.contains(term)))
+    query=filters["scope"].options(joinedload(Enrollment.student),joinedload(Enrollment.course),joinedload(Enrollment.semester),selectinload(Enrollment.predictions))
+    if filters["week"] is not None:
+        query=query.filter(Enrollment.current_week==filters["week"])
+    if term:
+        query=query.filter(db.or_(Student.student_code.contains(term),Student.full_name.contains(term)))
     all_enrollments=query.all(); rows=[]; counts={"CAO":0,"TRUNG_BINH":0,"ON_DINH":0}
     for enrollment in all_enrollments:
-        latest=max(enrollment.predictions,key=lambda p:(p.created_at,p.id),default=None)
+        snapshots=[p for p in enrollment.predictions if p.week_number==enrollment.current_week]
+        latest=max(snapshots,key=lambda p:(p.created_at,p.id),default=None)
         if latest: counts[latest.risk_level]+=1
         rows.append({"enrollment":enrollment,"prediction":latest})
     rank={"CAO":0,"TRUNG_BINH":1,"ON_DINH":2}
     rows.sort(key=lambda row:(rank.get(row["prediction"].risk_level,3) if row["prediction"] else 3,-(row["prediction"].probability if row["prediction"] else -1),row["enrollment"].student.student_code))
     per_page=_page_size()
     page=_ListPage(rows,_page_number(),per_page)
-    class_names=[value for value, in db.session.query(Student.class_name).distinct().order_by(Student.class_name)]
-    classes=_class_options()
-    majors=_major_options()
-    cohorts=sorted({item["cohort"] for item in classes if item["cohort"]},reverse=True)
-    course_options=_course_filter_options()
-    return render_template("analysis.html",rows=page.items,page=page,per_page=per_page,page_sizes=PAGE_SIZES,pagination_args=_pagination_args(),counts=counts,total=len({e.student_id for e in all_enrollments}),has_data=Enrollment.query.count()>0,semesters=semesters,courses=course_options,available_weeks=available_weeks,semester_id=semester_id,course_id=course_id,week=week,term=term,classes=classes,majors=majors,cohorts=cohorts,major=major,cohort=cohort,class_name=class_name)
+    return render_template("analysis.html",rows=page.items,page=page,per_page=per_page,page_sizes=PAGE_SIZES,pagination_args=_pagination_args(),counts=counts,total=len({e.student_id for e in all_enrollments}),total_enrollments=len(all_enrollments),has_data=Enrollment.query.count()>0,term=term,**filters)
 
 @bp.get("/students/<int:student_id>")
 @login_required
@@ -272,30 +351,33 @@ def predict(enrollment_id):
 @bp.post("/predict/batch")
 @login_required
 def predict_batch():
-    semester_id=request.form.get("semester_id",type=int); course_id=request.form.get("course_id",type=int); week=request.form.get("week",type=int)
-    major=request.form.get("major","").strip(); cohort=request.form.get("cohort","").strip(); class_name=request.form.get("class_name","").strip()
-    redirect_args={"semester_id":semester_id,"course_id":course_id,"week":week,"major":major,"cohort":cohort,"class_name":class_name}
-    if not semester_id or not course_id or week is None:
-        flash("Vui lòng chọn học kỳ, môn học và tuần.","error"); return redirect(url_for("main.analysis",**redirect_args))
+    filters=_analysis_filter_state(request.form)
+    term=request.form.get("q","").strip()
+    redirect_args={key:filters[key] for key in ("semester_id","course_id","week","major","cohort","class_name")}
+    redirect_args["q"]=term
+    week=filters["week"]
+    if week is None:
+        flash("Không có snapshot học tập phù hợp với bộ lọc đã chọn.","error"); return redirect(url_for("main.analysis",**redirect_args))
     if week<5:
         flash("Chưa đủ dữ liệu để dự báo. Hệ thống bắt đầu dự báo nguy cơ từ tuần 5.","error"); return redirect(url_for("main.analysis",**redirect_args))
-    enrollment_query=Enrollment.query.join(Student).filter(Enrollment.semester_id==semester_id,Enrollment.course_id==course_id,Enrollment.current_week==week)
-    if class_name: enrollment_query=enrollment_query.filter(Student.class_name==class_name)
-    enrollment_query=_filter_major(enrollment_query,major)
-    if cohort:
-        cohort_classes=[value for value, in db.session.query(Student.class_name).distinct() if _cohort_from_class(value)==cohort]
-        enrollment_query=enrollment_query.filter(Student.class_name.in_(cohort_classes) if cohort_classes else db.false())
+    enrollment_query=filters["scope"].filter(Enrollment.current_week==week)
+    if term:
+        enrollment_query=enrollment_query.filter(db.or_(Student.student_code.contains(term),Student.full_name.contains(term)))
     enrollments=enrollment_query.all()
     if not enrollments:
         flash("Chưa có dữ liệu để dự báo cho bộ lọc này.","error"); return redirect(url_for("main.analysis",**redirect_args))
-    done=skipped=0
+    done=skipped=failed=0
     for e in enrollments:
         try: predict_enrollment(e); done+=1
-        except (FileNotFoundError,ValueError):
-            db.session.rollback(); current_app.logger.exception("Không thể tải hoặc chạy mô hình dự báo"); flash("Không thể tải mô hình dự báo.","error"); return redirect(url_for("main.analysis",**redirect_args))
+        except (FileNotFoundError,ValueError) as error:
+            db.session.rollback(); failed+=1; current_app.logger.exception("Không thể chạy dự báo cho enrollment %s",e.id)
         except Exception:
             db.session.rollback(); current_app.logger.exception("Prediction failed for enrollment %s",e.id); skipped+=1
-    flash(f"Đã hoàn thành dự báo cho {done} sinh viên" + (f"; bỏ qua {skipped}." if skipped else "."),"success")
+    distinct_students=len({enrollment.student_id for enrollment in enrollments})
+    message=f"Đã hoàn thành dự báo cho {done} enrollment ({distinct_students} sinh viên; {len(enrollments)} enrollment hợp lệ)"
+    if skipped: message+=f"; bỏ qua {skipped} do lỗi xử lý"
+    if failed: message+=f"; {failed} lỗi model hoặc dữ liệu"
+    flash(message+". Không gửi email tự động.","success" if not failed else "error")
     return redirect(url_for("main.analysis",**redirect_args))
 
 @bp.route("/data/import",methods=["GET","POST"])
@@ -317,6 +399,22 @@ def import_data():
     per_page=_page_size(); batch_page=ImportBatch.query.options(joinedload(ImportBatch.user)).order_by(ImportBatch.imported_at.desc()).paginate(page=_page_number(),per_page=per_page,error_out=False)
     return render_template("import.html",preview=preview[:15],preview_summary=_import_summary(preview) if preview else None,preview_filename=filename,errors=errors[:20],error_count=len(errors),demo_count=Student.query.filter_by(is_demo=True).count(),demo_summary=_import_summary(demo_rows) if not demo_errors else None,batches=batch_page.items,page=batch_page,per_page=per_page,page_sizes=PAGE_SIZES,pagination_args=_pagination_args(),summary=summary)
 
+@bp.post("/data/import/dashboard")
+@admin_required
+def dashboard_import_preview():
+    f=request.files.get("file")
+    safe_name=secure_filename(f.filename) if f and f.filename else ""
+    if not f or not safe_name.lower().endswith(".csv"):
+        flash("Chỉ chấp nhận tệp CSV.","error")
+    else:
+        rows,errors=validate_csv(f.stream)
+        if errors:
+            flash(errors[0]["message"],"error")
+        else:
+            _save_preview(rows,safe_name); session["import_return"]="dashboard"
+            flash(f"Đã kiểm tra {len(rows)} dòng hợp lệ. Hãy xác nhận nhập.","success")
+    return redirect(url_for("main.dashboard"))
+
 @bp.post("/data/import/confirm")
 @admin_required
 def import_confirm():
@@ -326,10 +424,17 @@ def import_confirm():
         try:
             count,batch=import_rows_batched(payload["rows"],filename=payload["filename"],imported_by=current_user.id)
             db.session.add(AuditLog(user_id=current_user.id,action="IMPORT_DATA",target=batch.batch_id)); db.session.commit()
-            run_auto_pipeline([e.id for e in batch.enrollments])
-            flash(f"Đã nhập {count} bản ghi (batch {batch.batch_id[:8]}).","success")
+            imported_ids=[row[0] for row in Enrollment.query.filter_by(import_batch_id=batch.id).with_entities(Enrollment.id).all()]
+            prediction_result=run_import_prediction_pipeline(imported_ids)
+            flash(
+                f"Đã nhập {count} bản ghi (batch {batch.batch_id[:8]}). "
+                f"Đã dự báo {prediction_result['predictions']}; bỏ qua {prediction_result['skipped']} "
+                f"(tuần dưới 5); lỗi {prediction_result['failed']}. Không gửi email tự động.",
+                "success" if not prediction_result["failed"] else "info",
+            )
         except ValueError as e: flash(str(e),"error")
-    return redirect(url_for("main.import_data"))
+    destination=session.pop("import_return",None)
+    return redirect(url_for("main.dashboard") if destination=="dashboard" else url_for("main.import_data"))
 
 @bp.get("/data/template.csv")
 @login_required
@@ -341,23 +446,21 @@ def csv_template():
 @bp.post("/data/seed-demo")
 @admin_required
 def seed_demo():
-    if Student.query.filter_by(is_demo=True).first(): flash("Dữ liệu demo đã tồn tại.","error")
+    if Enrollment.query.first() or Student.query.first() or ImportBatch.query.first():
+        flash("Dữ liệu demo đã tồn tại hoặc database đã có dữ liệu. DEMO chỉ được khởi tạo trên database trống để tránh trộn với dữ liệu thật.","error")
     else:
         demo_file=Path(current_app.root_path).parent/"demo_data"/"du_lieu_sinh_vien_demo.csv"
         rows,errors=validate_csv(demo_file.open("rb"))
         if errors: flash("Tệp dữ liệu DEMO không hợp lệ.","error"); return redirect(url_for("main.import_data"))
-        _,batch=import_rows_batched(rows,is_demo=True,filename=demo_file.name,imported_by=current_user.id)
+        count,batch=import_rows_batched(rows,is_demo=True,filename=demo_file.name,imported_by=current_user.id)
         db.session.add(AuditLog(user_id=current_user.id,action="LOAD_DEMO",target=batch.batch_id)); db.session.commit()
-        predicted=0
-        try:
-            auto_was_on=setting_bool("auto_prediction_enabled",False)
-            if auto_was_on: predicted=run_auto_pipeline([e.id for e in batch.enrollments])["predictions"]
-            else:
-                for enrollment in Enrollment.query.filter(Enrollment.import_batch_id==batch.id, Enrollment.current_week >= 5).all():
-                    predict_enrollment(enrollment); predicted+=1
-            flash(f"Đã tải dữ liệu demo và tạo {predicted} lượt dự báo.","success")
-        except FileNotFoundError:
-            flash("Đã tải dữ liệu demo. Cần huấn luyện mô hình trước khi chạy dự báo.","success")
+        seeded_ids=[row[0] for row in Enrollment.query.filter_by(import_batch_id=batch.id).with_entities(Enrollment.id).all()]
+        prediction_result=run_import_prediction_pipeline(seeded_ids)
+        flash(
+            f"Đã tải {count} bản ghi DEMO. Đã dự báo {prediction_result['predictions']}; "
+            f"bỏ qua {prediction_result['skipped']} (tuần dưới 5); lỗi {prediction_result['failed']}. Không gửi email tự động.",
+            "success" if not prediction_result["failed"] else "info",
+        )
     return redirect(url_for("main.dashboard"))
 
 @bp.post("/data/reset-demo")

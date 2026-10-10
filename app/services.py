@@ -174,6 +174,34 @@ def run_auto_pipeline(enrollment_ids):
     set_setting("automation_last_run",datetime.now(timezone.utc).isoformat())
     return result
 
+def run_import_prediction_pipeline(enrollment_ids):
+    """Predict only records committed by one interactive import.
+
+    This deliberately does not consult global scheduler settings: an ADMIN
+    explicitly confirmed the import.  Email delivery remains disabled for this
+    path, even when scheduler email is enabled elsewhere.
+    """
+    result={"predictions":0,"alerts":0,"emails":0,"skipped":0,"failed":0}
+    ids=list(enrollment_ids)
+    if not ids:
+        return result
+    for enrollment in Enrollment.query.filter(Enrollment.id.in_(ids)).order_by(Enrollment.id).all():
+        if enrollment.current_week < 5:
+            result["skipped"]+=1
+            continue
+        try:
+            before=Alert.query.filter_by(enrollment_id=enrollment.id).count()
+            predict_enrollment(enrollment,send_auto_email=False,record_email_skip=False)
+            result["predictions"]+=1
+            after=Alert.query.filter_by(enrollment_id=enrollment.id).count()
+            result["alerts"]+=max(0,after-before)
+        except Exception:
+            # Import was already committed. Roll back only the failed
+            # prediction transaction and continue with the remaining records.
+            db.session.rollback()
+            result["failed"]+=1
+    return result
+
 def start_scheduler(app):
     if app.testing or getattr(app,"_automation_scheduler_started",False): return
     app._automation_scheduler_started=True
@@ -214,7 +242,7 @@ def recommendations_for(e):
     if not result: result.append(("DUY_TRI", "Các chỉ số hiện ổn định; tiếp tục duy trì nhịp học và theo dõi hàng tuần."))
     return result
 
-def predict_enrollment(e, send_auto_email=False):
+def predict_enrollment(e, send_auto_email=False, record_email_skip=True):
     if e.current_week < 5:
         raise ValueError("Chưa đủ dữ liệu để thực hiện dự báo từ tuần 5.")
     bundle=model_bundle(); probability=float(bundle["model"].predict_proba(pd.DataFrame([[e.score,e.attendance_rate,e.late_submissions]],columns=FEATURES))[0][1])
@@ -236,7 +264,7 @@ def predict_enrollment(e, send_auto_email=False):
         title=f"{e.student.full_name} có nguy cơ trượt môn {e.course.name} ở tuần {e.current_week}."
         db.session.add(Alert(enrollment=e,prediction_id=p.id,title=title)); created_alert=True
     db.session.commit()
-    if created_alert and e.student.email and not send_auto_email:
+    if created_alert and e.student.email and not send_auto_email and record_email_skip:
         db.session.add(EmailLog(recipient=e.student.email,subject="AUTO_EMAIL_DISABLED",status="SKIPPED",preview="AUTO_EMAIL_DISABLED")); db.session.commit()
     if created_alert and e.student.email and send_auto_email:
         subject=f"[Cảnh báo học tập] Nguy cơ học tập - {e.course.name}"
